@@ -42,3 +42,8 @@ Mengelola timer inkubasi (mulai/berhenti/reset)
 
 ## REAL PICTURE + POSTER
 <img width="1587" height="2245" alt="Lilac Pastel Blue Simple Lined Literary Devices Portrait Educational Poster (2)" src="https://github.com/user-attachments/assets/2dbddeca-c2ca-453d-af8a-b3c1678c55ac" />
+
+
+## Kontributor
+- Oka Pmna - [@okapmna](https://github.com/okapmna)
+- NIDA BAGUS WILLI PARMITA - [@WILIOP-666](https://github.com/WILIOP-666)
