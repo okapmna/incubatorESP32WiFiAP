@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inkubator WiFi AP</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.7/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-LN+7fdVzj6u52u30Kp6M/trliBMCMKTyK833zpbD+pXdCLuTusPj697FH4R/5mcr" crossorigin="anonymous">
+    <link rel="stylesheet" href="boostrap/node_modules/bootstrap/dist/css/bootstrap.min.css">
+    <style>
+        .time-display {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #333;
+        }
+    </style>
+</head>
+
+<body class="bg-light">
+    <div class="container py-4">
+        <h1 class="mb-4 text-center">Inkubator WiFi AP</h1>
+
+
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-success text-white">
+                <h3 class="h5 mb-0">Status Inkubasi</h3>
+            </div>
+            <div class="card-body">
+                <div class="row gx-4">
+                    <div class="col-md-6 mb-3 mb-md-0">
+                        <div class="card border-success h-100">
+                            <div class="card-body text-center d-flex flex-column justify-content-center">
+                                <div id="timeDisplay" class="display-1 fw-bold text-primary">00:00</div>
+                                <div id="dateDisplay" class="fs-1">Tanggal, Bulan Tahun</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card border-success h-100">
+                            <div class="card-body">
+                                <p class="time-display">Hari berlalu : <span id="dayCount" class="text-primary">0</span>
+                                    hari</p>
+                                <p>Tanggal Mulai : <span id="startDate" class="fw-bold ">Belum
+                                        Diatur</span></p>
+                                <p>Status Timer : <span id="timerStatus" class="fw-bold ">BERHENTI</span></p>
+                                <div class="d-flex gap-2 mt-4">
+                                    <button id="startTimer" class="btn btn-success flex-grow-1">Start</button>
+                                    <button id="stopTimer" class="btn btn-warning flex-grow-1">Stop</button>
+                                    <button id="resetTimer" class="btn btn-danger flex-grow-1">Reset</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-primary text-white">
+                <h2 class="h5 mb-0">ESP Info & Control</h2>
+            </div>
+            <div class="card-body">
+                <div class="row gx-4">
+
+                    <div class="col-md-6">
+                        <div class="card h-100 border-primary">
+                            <div class="m-3">
+
+                                <div class="row">
+                                    <div class="col-md-4">
+                                        <div class="card border-success justify-content-center">
+                                            <div class="card-body">
+                                                <p class="">Suhu Celcius</p>
+                                                <p class="card-text fs-4"><span id="tempC" class="fw-bold">0</span>°C</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="card border-success justify-content-center">
+                                            <div class="card-body">
+                                                <p class="">Suhu Fahrenheit</p>
+                                                <p class="card-text fs-4"><span id="tempF" class="fw-bold">0</span>°F</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="card border-success justify-content-center">
+                                            <div class="card-body">
+                                                <p class="">Kelembaban</p>
+                                                <p class="card-text fs-4"><span id="humidity" class="fw-bold">0</span>%</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <hr>
+                                <p>Tanggal : <span id="dateESP" class="fw-bold">0</span></p>
+                                <p>Waktu : <span id="timeESP" class="fw-bold">0</span></p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-6">
+                        <div class="card h-100 border-primary">
+                            <div class="m-3">
+                                <p class="fs-4 fw-bold">Control Lampu</p>
+                                <p>Status Lampu : <span id="relayStatus" class="fw-bold">MATI</span></p>
+                                <div class="d-flex gap-2">
+                                    <button id="relayOn" style="width: 180px;" class="btn btn-success">ON</button>
+                                    <button id="relayOff" style="width: 180px;" class="btn btn-danger">OFF</button>
+                                </div>
+
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col mt-4">
+                        <div class="card h-100 border-primary">
+                            <div class="m-3">
+                                <p class="fs-4 fw-bold">Control kecepatan fan</p>
+                                <p>Kecepatan Kipas : <span id="pwmValue" class="fw-bold">0</span></p>
+                                <input type="range" id="pwmSlider" class="form-range mb-3" min="0" max="255" value="0"
+                                    onchange="updatePWMValue()">
+                                <p class="mt-2">Mode : <span id="fanMode" class="fw-bold">Manual</span></p>
+                                <div class="d-flex gap-2 mt-2">
+                                    <button id="fanAuto" class="btn btn-primary">Mode Otomatis</button>
+                                    <button id="fanManual" class="btn btn-secondary">Mode Manual</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="/boostrap/node_modules/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.7/dist/js/bootstrap.bundle.min.js" integrity="sha384-ndDqU0Gzau9qJ1lfW4pNLlhNTkCfHzAVBReH9diLvGRem5+R9g2FzA8ZGN954O5Q" crossorigin="anonymous"></script>
+    <script>
+        const webSocket = new WebSocket('ws://192.168.4.1:81');
+
+        webSocket.onopen = function () {
+            console.log('WebSocket berhasil terhubung');
+        };
+
+        webSocket.onmessage = function (event) {
+            const data = JSON.parse(event.data);
+            document.getElementById('tempC').innerText = data.tempC;
+            document.getElementById('tempF').innerText = data.tempF;
+            document.getElementById('humidity').innerText = data.humidity;
+            document.getElementById('dateESP').innerText = data.dateESP;
+            document.getElementById('timeESP').innerText = data.timeESP;
+            document.getElementById('relayStatus').innerText = data.relayStatus ? 'HIDUP' : 'MATI';
+            document.getElementById("pwmValue").innerHTML = data.fanSpd;
+            document.getElementById("pwmSlider").value = data.fanSpd;
+
+            // Update data timer
+            document.getElementById('dayCount').innerText = data.dayCount || '0';
+            document.getElementById('startDate').innerText = data.startDate || 'Belum Diatur';
+            document.getElementById('timerStatus').innerText = data.timerRunning ? 'BERJALAN' : 'BERHENTI';
+
+            // Update fan mode
+            if (data.fanMode !== undefined) {
+                document.getElementById('fanMode').innerText = data.fanMode ? 'Otomatis' : 'Manual';
+            }
+        };
+
+        // Kontrol relay
+        document.getElementById('relayOn').onclick = function () {
+            webSocket.send('ON');
+        };
+
+        document.getElementById('relayOff').onclick = function () {
+            webSocket.send('OFF');
+        };
+
+        // Kontrol timer
+        document.getElementById('startTimer').onclick = function () {
+            webSocket.send('START_TIMER');
+        };
+
+        document.getElementById('stopTimer').onclick = function () {
+            webSocket.send('STOP_TIMER');
+        };
+
+        document.getElementById('resetTimer').onclick = function () {
+            if (confirm('Apakah Anda yakin ingin mereset timer?')) {
+                webSocket.send('RESET_TIMER');
+            }
+        };
+
+        // Kontrol PWM
+        function updatePWMValue() {
+            var value = document.getElementById("pwmSlider").value;
+            if (webSocket && webSocket.readyState === WebSocket.OPEN) {
+                webSocket.send("pwm:" + value);
+            }
+        }
+
+        // Kontrol mode kipas
+        document.getElementById('fanAuto').onclick = function () {
+            webSocket.send('FAN_AUTO');
+            document.getElementById('fanMode').innerText = 'Otomatis';
+        };
+
+        document.getElementById('fanManual').onclick = function () {
+            webSocket.send('FAN_MANUAL');
+            document.getElementById('fanMode').innerText = 'Manual';
+        };
+
+        // Jam browser
+        function updateClock() {
+            const now = new Date();
+            const timeOptions = {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            };
+            const timeString = now.toLocaleTimeString('id-ID', timeOptions);
+            document.getElementById('timeDisplay').innerText = timeString;
+            const dateOptions = {
+                day: 'numeric',
+                month: 'long',
+                year: 'numeric'
+            };
+            const dateString = now.toLocaleDateString('id-ID', dateOptions);
+            document.getElementById('dateDisplay').innerText = dateString;
+        }
+
+        // Perbarui jam browser setiap detik
+        setInterval(updateClock, 1000);
+        updateClock();
+    </script>
+</body>
+
+</html>
