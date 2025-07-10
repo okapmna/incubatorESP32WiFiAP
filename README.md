@@ -1,4 +1,4 @@
-# Inkubator WiFi AP
+# Inkubator ESP32 WiFi AP
 Project Inkubator WiFi AP adalah sebuah proyek yang bertujuan untuk mengontrol dan monitoring suhu, kelembaban, dan lampu dalam suatu inkubator. Proyek ini menggunakan ESP32 sebagai mikrokontroler utama, yang terhubung dengan sensor DHT11 untuk membaca suhu dan kelembaban, serta lampu yang diatur melalui relay.Pengontrolan dilakukan melalui sebuah halaman web. Antarmuka web ini memungkinkan pengguna untuk mengatur suhu, kelembaban, dan lampu, serta set timer waktu mulai dan stop inkubasi 
 
 ## Fitur
