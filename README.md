@@ -37,8 +37,8 @@ Mengontrol lampu (hidup/mati)
 Mengatur kecepatan kipas (manual atau otomatis)
 Mengelola timer inkubasi (mulai/berhenti/reset)
 
-## TOPOLOGI
-<img width="3071" height="1361" alt="TOPOLOGI INKUBATOR" src="https://github.com/user-attachments/assets/c8cc301e-4aeb-42fd-81d8-8f2d1081cb95" />
+## Skematik
+<img width="1587" alt="Skematik Inkubator" src="skematik.png" />
 
 ## REAL PICTURE + POSTER
 <img width="1587" height="2245" alt="Lilac Pastel Blue Simple Lined Literary Devices Portrait Educational Poster (2)" src="https://github.com/user-attachments/assets/2dbddeca-c2ca-453d-af8a-b3c1678c55ac" />
