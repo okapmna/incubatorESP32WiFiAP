@@ -9,7 +9,7 @@ Project Inkubator WiFi AP adalah sebuah proyek yang bertujuan untuk mengontrol d
 - Antarmuka Web: Kontrol dan pemantauan melalui browser
 
 ## Hardware & Komponen
-- ESP32
+- Wemos D1 R32/ESP32
 - Sensor DHT11
 - Relay
 - Fan DC 12V
@@ -29,7 +29,7 @@ Project Inkubator WiFi AP adalah sebuah proyek yang bertujuan untuk mengontrol d
   - RST: Pin 2
 
 ## Cara penggunaan
-- Hubungkan perangkat ke jaringan WiFi dengan SSID "NYUDISSS" (password: "87654321C")
+- Hubungkan perangkat ke jaringan WiFi dengan SSID yang sudah dikonfigurasi sebelumnya di code untuk ESP32
 - Open file index.html atau bisa gunakan liveserver maka akan otomatis membuka halaman web Inkubator WiFi AP
 
 Memantau suhu dan kelembaban
