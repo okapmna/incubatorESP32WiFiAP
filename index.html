@@ -5,7 +5,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Inkubator WiFi AP</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.7/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-LN+7fdVzj6u52u30Kp6M/trliBMCMKTyK833zpbD+pXdCLuTusPj697FH4R/5mcr" crossorigin="anonymous">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.7/dist/css/bootstrap.min.css" rel="stylesheet"
+        integrity="sha384-LN+7fdVzj6u52u30Kp6M/trliBMCMKTyK833zpbD+pXdCLuTusPj697FH4R/5mcr" crossorigin="anonymous">
     <link rel="stylesheet" href="boostrap/node_modules/bootstrap/dist/css/bootstrap.min.css">
     <style>
         .time-display {
@@ -45,7 +46,6 @@
                                 <p>Status Timer : <span id="timerStatus" class="fw-bold ">BERHENTI</span></p>
                                 <div class="d-flex gap-2 mt-4">
                                     <button id="startTimer" class="btn btn-success flex-grow-1">Start</button>
-                                    <button id="stopTimer" class="btn btn-warning flex-grow-1">Stop</button>
                                     <button id="resetTimer" class="btn btn-danger flex-grow-1">Reset</button>
                                 </div>
                             </div>
@@ -72,7 +72,8 @@
                                         <div class="card border-success justify-content-center">
                                             <div class="card-body">
                                                 <p class="">Suhu Celcius</p>
-                                                <p class="card-text fs-4"><span id="tempC" class="fw-bold">0</span>°C</p>
+                                                <p class="card-text fs-4"><span id="tempC" class="fw-bold">0</span>°C
+                                                </p>
                                             </div>
                                         </div>
                                     </div>
@@ -80,7 +81,8 @@
                                         <div class="card border-success justify-content-center">
                                             <div class="card-body">
                                                 <p class="">Suhu Fahrenheit</p>
-                                                <p class="card-text fs-4"><span id="tempF" class="fw-bold">0</span>°F</p>
+                                                <p class="card-text fs-4"><span id="tempF" class="fw-bold">0</span>°F
+                                                </p>
                                             </div>
                                         </div>
                                     </div>
@@ -88,14 +90,12 @@
                                         <div class="card border-success justify-content-center">
                                             <div class="card-body">
                                                 <p class="">Kelembaban</p>
-                                                <p class="card-text fs-4"><span id="humidity" class="fw-bold">0</span>%</p>
+                                                <p class="card-text fs-4"><span id="humidity" class="fw-bold">0</span>%
+                                                </p>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
-                                <hr>
-                                <p>Tanggal : <span id="dateESP" class="fw-bold">0</span></p>
-                                <p>Waktu : <span id="timeESP" class="fw-bold">0</span></p>
                             </div>
                         </div>
                     </div>
@@ -136,34 +136,40 @@
     </div>
 
     <script src="/boostrap/node_modules/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.7/dist/js/bootstrap.bundle.min.js" integrity="sha384-ndDqU0Gzau9qJ1lfW4pNLlhNTkCfHzAVBReH9diLvGRem5+R9g2FzA8ZGN954O5Q" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.7/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-ndDqU0Gzau9qJ1lfW4pNLlhNTkCfHzAVBReH9diLvGRem5+R9g2FzA8ZGN954O5Q"
+        crossorigin="anonymous"></script>
     <script>
-        const webSocket = new WebSocket('ws://192.168.4.1:81');
+        const webSocket = new WebSocket('ws://10.10.10.15:81');
 
         webSocket.onopen = function () {
             console.log('WebSocket berhasil terhubung');
         };
+
+        // Counting Var
+        var startDateString;
 
         webSocket.onmessage = function (event) {
             const data = JSON.parse(event.data);
             document.getElementById('tempC').innerText = data.tempC;
             document.getElementById('tempF').innerText = data.tempF;
             document.getElementById('humidity').innerText = data.humidity;
-            document.getElementById('dateESP').innerText = data.dateESP;
-            document.getElementById('timeESP').innerText = data.timeESP;
             document.getElementById('relayStatus').innerText = data.relayStatus ? 'HIDUP' : 'MATI';
             document.getElementById("pwmValue").innerHTML = data.fanSpd;
             document.getElementById("pwmSlider").value = data.fanSpd;
 
             // Update data timer
-            document.getElementById('dayCount').innerText = data.dayCount || '0';
-            document.getElementById('startDate').innerText = data.startDate || 'Belum Diatur';
+            // document.getElementById('dayCount').innerText = data.dayCount || '0';
+            document.getElementById('startDate').innerText = data.startdate || 'Belum Diatur';
+            startDateString = data.startdate;
             document.getElementById('timerStatus').innerText = data.timerRunning ? 'BERJALAN' : 'BERHENTI';
 
             // Update fan mode
             if (data.fanMode !== undefined) {
                 document.getElementById('fanMode').innerText = data.fanMode ? 'Otomatis' : 'Manual';
             }
+
+            calculateDifference();
         };
 
         // Kontrol relay
@@ -177,16 +183,12 @@
 
         // Kontrol timer
         document.getElementById('startTimer').onclick = function () {
-            webSocket.send('START_TIMER');
-        };
-
-        document.getElementById('stopTimer').onclick = function () {
-            webSocket.send('STOP_TIMER');
+            webSocket.send('START_DATE');
         };
 
         document.getElementById('resetTimer').onclick = function () {
             if (confirm('Apakah Anda yakin ingin mereset timer?')) {
-                webSocket.send('RESET_TIMER');
+                webSocket.send('RESET_DATE');
             }
         };
 
@@ -226,6 +228,21 @@
             };
             const dateString = now.toLocaleDateString('id-ID', dateOptions);
             document.getElementById('dateDisplay').innerText = dateString;
+        }
+
+        // Hitung selisih
+        function calculateDifference() {
+            const startDate = new Date(startDateString);
+            const today = new Date();
+            const differenceInMilliseconds = today.getTime() - startDate.getTime();
+            const differenceInDays = differenceInMilliseconds / (1000 * 60 * 60 * 24);
+            const resultElement = document.getElementById('dayCount');
+            if (isNaN(Math.floor(differenceInDays))) {
+                resultElement.innerHTML = "0";
+            } else {
+                resultElement.innerHTML = Math.floor(differenceInDays);
+            }
+
         }
 
         // Perbarui jam browser setiap detik
