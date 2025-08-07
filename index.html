@@ -140,7 +140,7 @@
         integrity="sha384-ndDqU0Gzau9qJ1lfW4pNLlhNTkCfHzAVBReH9diLvGRem5+R9g2FzA8ZGN954O5Q"
         crossorigin="anonymous"></script>
     <script>
-        const webSocket = new WebSocket('ws://10.10.10.15:81');
+        const webSocket = new WebSocket('ws://10.10.10.9:81');
 
         webSocket.onopen = function () {
             console.log('WebSocket berhasil terhubung');
@@ -162,7 +162,6 @@
             // document.getElementById('dayCount').innerText = data.dayCount || '0';
             document.getElementById('startDate').innerText = data.startdate || 'Belum Diatur';
             startDateString = data.startdate;
-            document.getElementById('timerStatus').innerText = data.timerRunning ? 'BERJALAN' : 'BERHENTI';
 
             // Update fan mode
             if (data.fanMode !== undefined) {
@@ -239,8 +238,10 @@
             const resultElement = document.getElementById('dayCount');
             if (isNaN(Math.floor(differenceInDays))) {
                 resultElement.innerHTML = "0";
+                document.getElementById('timerStatus').innerText = "Terhenti";
             } else {
                 resultElement.innerHTML = Math.floor(differenceInDays);
+                document.getElementById('timerStatus').innerText = "Berjalan";
             }
 
         }
