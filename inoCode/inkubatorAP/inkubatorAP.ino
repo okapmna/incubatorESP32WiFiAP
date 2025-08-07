@@ -41,8 +41,8 @@ DHT dht(DHTPIN, DHTTYPE);
 // MQTT Config
 const char* mqtt_server = "test.mosquitto.org";
 const int mqtt_port = 1883;
-const char* mqtt_topic_publish = "esp32/incubator/data";    // Topic untuk publish data sensor
-const char* mqtt_topic_subscribe = "esp32/incubator/command"; // Topic untuk menerima perintah
+const char* mqtt_topic_publish = ........";    // Topic ufor publish
+const char* mqtt_topic_subscribe = "........"; // Topic for subscribe/command
 
 // Init Network
 WiFiClient espClient;
