@@ -134,7 +134,7 @@ void setup() {
 }
 
 void loop() {
-  // PENTING: Jalankan proses WiFiManager di setiap loop
+  // Menjalankan proses WiFiManager di setiap loop
   wm.process();
 
   unsigned long now = millis();
