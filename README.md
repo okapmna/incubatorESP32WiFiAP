@@ -4,7 +4,7 @@ Selamat datang di repositori Smart Inkubator. Proyek ini bertujuan untuk memanta
 
 Repositori ini menyediakan **2 Versi** sistem yang dapat Anda pilih sesuai kebutuhan:
 1.  **Versi WiFi AP (Access Point):** Kontrol langsung tanpa internet (lokal).
-2.  **Versi MQTT (IoT):** Kontrol dan monitoring jarak jauh via internet. Yang dapat di kontrol dengan https://github.com/tobiasdonb/unimon-dashboard
+2.  **Versi MQTT (IoT):** Kontrol dan monitoring jarak jauh via internet. Yang dapat di kontrol dengan dashboard universal sepeti [Unimon-dashboard](https://github.com/okapmna/unimon-dashboard.git) dan Node-Red
    
 
 <details>
