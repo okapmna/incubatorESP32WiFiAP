@@ -1,4 +1,4 @@
-# Smart EGG - Incubator ESP32
+# Smart EGG Incubator ESP32
 
 Selamat datang di repositori Smart Inkubator. Proyek ini bertujuan untuk memantau dan mengontrol suhu serta kelembaban inkubator penetas telur secara otomatis.
 
