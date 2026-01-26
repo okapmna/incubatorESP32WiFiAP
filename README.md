@@ -43,8 +43,8 @@ Versi ini menghubungkan ESP32 ke internet melalui WiFi rumah dan mengirimkan dat
 3.  Upload ke ESP32.
 4.  Gunakan aplikasi Dashboard MQTT (seperti MQTT Dash, IoT MQTT Panel, atau Node-RED) dan subscribe ke topik yang ditentukan.
 
-### Skematik
-<img width="800" alt="Skematik Inkubator" src="skematik.png" />
+### Skematik Rangkaian
+<img width="800" alt="Skematik Inkubator" src="schematics/skematik1.png" />
 
 </details>
 
@@ -96,7 +96,7 @@ Antarmuka web memungkinkan pengaturan suhu, kelembaban, lampu, serta timer inkub
 ### Skematik & Dokumentasi
 **Skematik Rangkaian:**
 <br>
-<img width="800" alt="Skematik Inkubator" src="skematik.png" />
+<img width="800" alt="Skematik Inkubator" src="schematics/skematik2.png" />
 
 **Poster & Real Picture:**
 <br>
