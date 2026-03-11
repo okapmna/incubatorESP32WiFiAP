@@ -1,110 +1,110 @@
 # Smart EGG Incubator ESP32
 
-Selamat datang di repositori Smart Inkubator. Proyek ini bertujuan untuk memantau dan mengontrol suhu serta kelembaban inkubator penetas telur secara otomatis.
+Welcome to the Smart Incubator repository. This project aims to automatically monitor and control the temperature and humidity of an egg incubator.
 
-Repositori ini menyediakan **2 Versi** sistem yang dapat Anda pilih sesuai kebutuhan:
-1.  **Versi MQTT (IoT):** Kontrol dan monitoring jarak jauh via internet. Yang dapat di kontrol dengan dashboard universal sepeti [Unimon-dashboard](https://github.com/okapmna/unimon-dashboard.git) dan Node-Red
-2.  **Versi WiFi AP (Access Point):** Kontrol langsung tanpa internet (lokal).
+This repository provides **2 Versions** of the system that you can choose from according to your needs:
+1.  **MQTT (IoT) Version:** Remote control and monitoring via the internet. It can be controlled with universal dashboards such as [Unimon-dashboard](https://github.com/okapmna/unimon-dashboard.git) and Node-RED.
+2.  **WiFi AP (Access Point) Version:** Direct control without the internet (local).
 
    
 
 <details>
 <summary><h2>1. Incubator ESP32 MQTT (IoT)</h2></summary>
 
-### Deskripsi
-Versi ini menghubungkan ESP32 ke internet melalui WiFi rumah dan mengirimkan data ke MQTT Broker. Versi ini memungkinkan Anda memantau inkubator dari jarak jauh (di luar rumah) menggunakan dashboard IoT.
+### Description
+This version connects the ESP32 to the internet via your home WiFi and sends data to an MQTT Broker. This allows you to monitor the incubator remotely (outside the house) using an IoT dashboard.
 
-### Fitur Utama
-* **WiFiManager:** Dapat digunakan dimana saja tanpa perlu konfigurasi Wi-Fi di Hardcode
-* **Akses Internet:** Monitoring dari mana saja.
-* **Pub/Sub MQTT:** Pengiriman data suhu real-time ke broker.
-* **Sinkronisasi Status:** Status lampu dan kipas tersinkronisasi dengan dashboard.
+### Key Features
+* **WiFiManager:** Can be used anywhere without the need for hardcoded Wi-Fi configurations.
+* **Internet Access:** Monitor from anywhere.
+* **MQTT Pub/Sub:** Real-time temperature data transmission to the broker.
+* **Status Synchronization:** Lamp and fan statuses are synchronized with the dashboard.
 
-### Hardware & Komponen
-* *Sama dengan versi WiFi AP (Lihat di atas).*
+### Hardware & Components
+* *Same as the WiFi AP version (See below).*
 
-### Konfigurasi Pin
-| Komponen | Pin ESP32 | Keterangan |
+### Pin Configuration
+| Component | ESP32 Pin | Description |
 | :--- | :--- | :--- |
-| **DHT22** | GPIO 18 | Data Sensor (Suhu & Kelembapan) |
+| **DHT22** | GPIO 18 | Sensor Data (Temperature & Humidity) |
 | **L298N Motor Driver** | GPIO 19 | FAN Control (IN1) |
-| **AOD4148 MOSFET** | GPIO 15 | HEATER Control (Pemanas) |
+| **AOD4148 MOSFET** | GPIO 15 | HEATER Control |
 | **Relay Module** | GPIO 05 | HUMIDIFIER Control (IN1) |
 
-### Cara Penggunaan
-1.  Buka file kode versi **MQTT**.
-2.  Edit bagian kredensial WiFi dan MQTT Broker:
+### How to Use
+1.  Open the **MQTT** version code file.
+2.  Edit the WiFi credentials and MQTT Broker section:
     ```cpp
     const char* mqtt_server = "your.mqtt.server";
     const int mqtt_port = 8883;
     const char* mqtt_user = "incubator_user";
     const char* mqtt_pass = "incubator_pass";
     ```
-3.  Upload ke ESP32.
-4.  Gunakan aplikasi Dashboard MQTT (seperti MQTT Dash, IoT MQTT Panel, atau Node-RED) dan subscribe ke topik yang ditentukan.
+3.  Upload it to the ESP32.
+4.  Use an MQTT Dashboard application (such as MQTT Dash, IoT MQTT Panel, or Node-RED) and subscribe to the specified topics.
 
-### Skematik Rangkaian dan Real Pic Perangkat
-<img width="800" alt="Skematik Inkubator" src="schematics/skematik1.png" />
-<img width="800" alt="Skematik Inkubator" src="images/incubator32IoT.jpeg" />
+### Circuit Schematic and Device Real Picture
+<img width="800" alt="Incubator Schematic" src="schematics/skematik1.png" />
+<img width="800" alt="Incubator Real Picture" src="images/incubator32IoT.jpeg" />
 
 </details>
 
 <details>
 <summary><h2>2. Incubator ESP32 WiFi AP </h2></summary>
 
-### Deskripsi
-Versi ini menjadikan ESP32 sebagai Access Point (Hotspot). Pengguna terhubung langsung ke WiFi yang dipancarkan ESP32 untuk membuka halaman web kontrol. Sangat cocok untuk area tanpa koneksi internet stabil.
+### Description
+This version sets the ESP32 as an Access Point (Hotspot). Users connect directly to the WiFi broadcasted by the ESP32 to open the control web page. It is highly suitable for areas without a stable internet connection.
 
-Antarmuka web memungkinkan pengaturan suhu, kelembaban, lampu, serta timer inkubasi.
+The web interface allows you to adjust the temperature, humidity, lamps, and incubation timer.
 
-### Fitur Utama
-* **Monitoring Real-time:** Pembacaan suhu dan kelembaban via DHT11.
-* **Kontrol Lampu:** Otomatisasi via Relay.
-* **Kontrol Kipas:** Pengaturan kecepatan manual atau otomatis berdasarkan suhu.
-* **Timer Inkubasi:** Menghitung hari operasional sejak dimulai.
-* **Web Interface:** Dashboard kontrol via browser (tanpa perlu install aplikasi).
+### Key Features
+* **Real-time Monitoring:** Temperature and humidity readings via DHT11.
+* **Lamp Control:** Automation via Relay.
+* **Fan Control:** Manual or automatic speed adjustment based on temperature.
+* **Incubation Timer:** Counts operational days since starting.
+* **Web Interface:** Control dashboard via browser (no app installation required).
 
-### Hardware & Komponen
+### Hardware & Components
 * ESP32 Development Board
-* Sensor Suhu & Kelembaban DHT11
-* Modul Relay 1 Channel
-* Fan DC 12V
-* Motor Driver (untuk kontrol kecepatan fan)
-* RTC DS1302 (Modul Jam Real-time)
-* Kabel Jumper
-* Adaptor 5V & Sumber daya 12V (untuk fan)
+* DHT11 Temperature & Humidity Sensor
+* 1-Channel Relay Module
+* 12V DC Fan
+* Motor Driver (for fan speed control)
+* RTC DS1302 (Real-time Clock Module)
+* Jumper Wires
+* 5V Adapter & 12V Power Supply (for the fan)
 
-### Konfigurasi Pin
+### Pin Configuration
 
-| Komponen | Pin ESP32 | Keterangan |
+| Component | ESP32 Pin | Description |
 | :--- | :--- | :--- |
-| **DHT11** | GPIO 23 | Data Sensor |
-| **Relay** | GPIO 18 | Kontrol Lampu |
-| **Fan DC** | GPIO 19 | PWM Fan Control |
+| **DHT11** | GPIO 23 | Sensor Data |
+| **Relay** | GPIO 18 | Lamp Control |
+| **DC Fan** | GPIO 19 | PWM Fan Control |
 | **RTC DS1302** | GPIO 4 | DATA |
 | **RTC DS1302** | GPIO 5 | CLK |
 | **RTC DS1302** | GPIO 2 | RST |
 
-### Cara Penggunaan
-1.  Upload kode versi **WiFi AP** ke ESP32.
-2.  Nyalakan perangkat.
-3.  Hubungkan HP/Laptop ke WiFi dengan kredensial berikut:
+### How to Use
+1.  Upload the **WiFi AP** version code to the ESP32.
+2.  Turn on the device.
+3.  Connect your phone/laptop to the WiFi using the following credentials:
     * **SSID:** `NYUDISSS`
     * **Password:** `87654321C`
-4.  Buka browser dan akses `index.html` (atau IP address statis jika diatur, biasanya `192.168.4.1`).
-5.  Dashboard akan muncul untuk memantau suhu, mengontrol lampu, dan mengatur timer.
+4.  Open a browser and access `index.html` (or the static IP address if set, usually `192.168.4.1`).
+5.  The dashboard will appear, allowing you to monitor the temperature, control the lamp, and set the timer.
 
-### Skematik & Dokumentasi
-**Skematik Rangkaian:**
+### Schematics & Documentation
+**Circuit Schematic:**
 <br>
-<img width="800" alt="Skematik Inkubator" src="schematics/skematik2.png" />
+<img width="800" alt="Incubator Schematic" src="schematics/skematik2.png" />
 
 **Poster & Real Picture:**
 <br>
-<img width="400" alt="Poster Dokumentasi" src="https://github.com/user-attachments/assets/2dbddeca-c2ca-453d-af8a-b3c1678c55ac" />
+<img width="400" alt="Documentation Poster" src="https://github.com/user-attachments/assets/2dbddeca-c2ca-453d-af8a-b3c1678c55ac" />
 </details>
 
 
-## Contributor
+## Contributors
 - **Oka Pmna** - [@okapmna](https://github.com/okapmna)
 - **IDA BAGUS WILLI PARMITA** - [@WILIOP-666](https://github.com/WILIOP-666)
