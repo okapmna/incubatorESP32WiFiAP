@@ -18,11 +18,11 @@
 #define SDA_PIN 21
 #define SCL_PIN 22
 
-// MQTT Config
-const char* mqtt_server = "1118e8175bef4f45b3d76681ba47bf64.s1.eu.hivemq.cloud";
-const int mqtt_port = 8883;
-const char* mqtt_user = "iwasabird";
-const char* mqtt_pass = "54321Jan";
+// MQTT Config Credentials
+const char* mqtt_server = "broker.hivemq.com";
+const int mqtt_port = 1883;
+const char* mqtt_user = "";
+const char* mqtt_pass = "";
 
 // Variabel parameter temp n hum
 double target_temp = 37.0;
