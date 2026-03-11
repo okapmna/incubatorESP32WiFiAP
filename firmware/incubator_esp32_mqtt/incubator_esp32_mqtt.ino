@@ -8,6 +8,7 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <AutoPID.h>
+#include "secret.h"
 
 // Pin define
 // #define DHTPIN 18           
