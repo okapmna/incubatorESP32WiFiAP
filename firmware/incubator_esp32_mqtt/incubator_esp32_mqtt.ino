@@ -2,7 +2,8 @@
 #include <WiFiClientSecure.h>
 #include <WiFiManager.h>
 #include <PubSubClient.h>
-// #include <DHT.h>            // Tidak digunakan
+// #include <DHT.h>
+// Replace DHT with AHT20
 #include <Adafruit_AHTX0.h>
 #include <LiquidCrystal_I2C.h>
 #include <Preferences.h>
@@ -54,7 +55,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
   for (unsigned int i = 0; i < length; i++) {
     message += (char)payload[i];
   }
-  Serial.print("Pesan masuk: ");
+  Serial.print("Message received: ");
   Serial.println(message);
 
   // dev_getinfo message handler
@@ -68,8 +69,9 @@ void callback(char* topic, byte* payload, unsigned int length) {
     serializeJson(docResp, buffer);
 
     // Kirim balik ke topik data
-    client.publish("incubator/19/data", buffer);
-    Serial.println("Respon 'dev_getinfo' dikirim!");
+    // Send back to data topic
+    client.publish(mqtt_topic_data, buffer);
+    Serial.println("Respon 'dev_getinfo' sent!");
     return;  // STOP di sini, jangan lanjut ke deserializeJson di bawah
   }
 
@@ -86,9 +88,9 @@ void callback(char* topic, byte* payload, unsigned int length) {
       target_hum = doc["target_hum"];
       preferences.putDouble("t_hum", target_hum);
     }
-    Serial.println("Target diperbarui dari MQTT dan disimpan.");
+    Serial.println("Target updated from MQTT and saved.");
   } else {
-    Serial.println("Bukan JSON valid dan bukan perintah dikenal.");
+    Serial.println("Not valid JSON and unknown command.");
   }
 }
 
@@ -104,7 +106,8 @@ void reconnect() {
     if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
       Serial.println("Terhubung!");
       // Pastikan subscribe ke topik yang benar untuk menerima perintah
-      client.subscribe("incubator/19/con");
+      // Ensure topic is correct to receive commands
+      client.subscribe(mqtt_topic_con);
     } else {
       Serial.print("Gagal, rc=");
       Serial.print(client.state());
@@ -177,6 +180,7 @@ void loop() {
   unsigned long now = millis();
 
   // Cek koneksi wifi
+  // WiFi Check
   if (now - lastWifiCheck >= 1000) {
     lastWifiCheck = now;
     if (WiFi.status() != WL_CONNECTED) {
@@ -197,6 +201,7 @@ void loop() {
   }
 
   // Baca Sensor & Kontrol PID
+  // Sensor Read & PID Control
   if (now - lastSensorRead >= 750) {
 
     // current_temp = dht.readTemperature(); // <-- DHT COMMANDED
@@ -211,6 +216,7 @@ void loop() {
 
     if (!isnan(current_temp) && !isnan(current_hum)) {
       // Jalankan PID untuk Pemanas
+      // Run PID for Heater
       myPID.run();
       int final_pwm = (int)heater_pwm_value;
       if (current_temp < target_temp && final_pwm < 15) {
@@ -223,6 +229,7 @@ void loop() {
       ledcWrite(FAN_PWM_PIN, 250);
 
       // Kontrol Humidifier
+      // Humidifier Control
       if (current_hum < target_hum) {
         digitalWrite(RELAY_HUM_PIN, HIGH);
       } else {
@@ -230,6 +237,7 @@ void loop() {
       }
 
       // Tampilan LCD
+      // LCD Display
       if (wm.getConfigPortalActive()) {
         lcd.setCursor(0, 0);
         lcd.print("SETUP WIFI MODE ");
@@ -245,6 +253,7 @@ void loop() {
   }
 
   // Publish Data JSON ke MQTT Setiap 5 Detik
+  // Publish Data JSON to MQTT every 5 seconds
   if (now - lastMqttPublish >= 5000) {
     if (WiFi.status() == WL_CONNECTED && client.connected() && !isnan(current_temp)) {
       StaticJsonDocument<200> doc;
@@ -253,7 +262,7 @@ void loop() {
 
       char buffer[200];
       serializeJson(doc, buffer);
-      client.publish("incubator/19/data", buffer);
+      client.publish(mqtt_topic_data, buffer);
     }
     lastMqttPublish = now;
   }
