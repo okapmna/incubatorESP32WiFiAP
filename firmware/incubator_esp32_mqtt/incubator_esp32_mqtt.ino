@@ -12,8 +12,8 @@
 #include "secret.h"
 
 // Pin define
-// #define DHTPIN 18           
-// #define DHTTYPE DHT22       
+// #define DHTPIN 18
+// #define DHTTYPE DHT22
 #define FAN_PWM_PIN 19
 #define HEATER_PWM_PIN 15
 #define RELAY_HUM_PIN 4
@@ -230,9 +230,13 @@ void loop() {
 
       // Kontrol Humidifier
       // Humidifier Control
-      if (current_hum < target_hum) {
+      if (current_hum <= (target_hum - 2.0)) {
+        // Nyala jika kelembapan drop di bawah target - toleransi
+        // Turn on if humidity drop below target - tolerance
         digitalWrite(RELAY_HUM_PIN, HIGH);
-      } else {
+      } else if (current_hum >= target_hum) {
+        // Mati jika kelembapan sudah mencapai target
+        // Turn off if humidity reach target
         digitalWrite(RELAY_HUM_PIN, LOW);
       }
 
