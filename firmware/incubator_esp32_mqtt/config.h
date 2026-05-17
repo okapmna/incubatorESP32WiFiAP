@@ -5,7 +5,7 @@
 #include <WiFiManager.h>
 #include <PubSubClient.h>
 // #include <DHT.h>          // DHT22 dinonaktifkan, diganti AHT20
-// #include <LiquidCrystal_I2C.h>  // LCD I2C 16x2 (opsional, diganti OLED)
+#include <LiquidCrystal_I2C.h>     // LCD I2C 16x2 (addr 0x27)
 #include <Adafruit_AHTX0.h>        // Sensor AHT20
 #include <Adafruit_GFX.h>          // OLED graphics core
 #include <Adafruit_SSD1306.h>      // OLED 0.96" driver
@@ -42,7 +42,7 @@ double heater_pwm_value;
 
 // Object Instances
 // DHT dht(DHTPIN, DHTTYPE);           // DHT22 dinonaktifkan
-// LiquidCrystal_I2C lcd(0x27, 16, 2); // LCD I2C 16x2 (opsional)
+LiquidCrystal_I2C lcd(0x27, 16, 2);    // LCD I2C 16x2
 Adafruit_AHTX0   aht;                  // Sensor AHT20
 Adafruit_SSD1306 oled(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET); // OLED 0.96"
 WiFiClientSecure espClient;

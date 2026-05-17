@@ -20,6 +20,13 @@ void setup() {
     Serial.println("OLED SSD1306 OK.");
   }
 
+  // ─── LCD I2C 16x2 ────────────────────────────────────────
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Initializing...");
+  Serial.println("LCD I2C 16x2 OK.");
+
   // PWM & Relay
   pinMode(RELAY_HUM_PIN, OUTPUT);
   ledcAttach(FAN_PWM_PIN, 5000, 8);
