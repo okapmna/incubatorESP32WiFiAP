@@ -6,12 +6,19 @@
 void setup() {
   Serial.begin(115200);
 
-  // LCD & I2C
+  // ─── I2C & OLED 0.96" ────────────────────────────────────
   Wire.begin(SDA_PIN, SCL_PIN);
-  lcd.init();
-  lcd.backlight();
-  lcd.setCursor(0, 0);
-  lcd.print("Initializing...");
+  if (!oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    Serial.println("OLED SSD1306 tidak ditemukan!");
+  } else {
+    oled.clearDisplay();
+    oled.setTextSize(1);
+    oled.setTextColor(SSD1306_WHITE);
+    oled.setCursor(20, 28);
+    oled.print("Initializing...");
+    oled.display();
+    Serial.println("OLED SSD1306 OK.");
+  }
 
   // PWM & Relay
   pinMode(RELAY_HUM_PIN, OUTPUT);
@@ -21,9 +28,12 @@ void setup() {
   // PID
   myPID.setBangBang(0.5);
 
-  // DHT22
-  dht.begin();
-  Serial.println("DHT22 Ditemukan dan Dimulai.");
+  // ─── AHT20 ────────────────────────────────────────────────
+  if (!aht.begin()) {
+    Serial.println("Sensor AHT20 tidak ditemukan! Periksa wiring.");
+  } else {
+    Serial.println("AHT20 Ditemukan dan Dimulai.");
+  }
 
   // Load Preferences (NVS)
   preferences.begin("incubator", false);

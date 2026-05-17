@@ -4,21 +4,30 @@
 #include <WiFiClientSecure.h>
 #include <WiFiManager.h>
 #include <PubSubClient.h>
-#include <DHT.h>
-#include <LiquidCrystal_I2C.h>
+// #include <DHT.h>          // DHT22 dinonaktifkan, diganti AHT20
+// #include <LiquidCrystal_I2C.h>  // LCD I2C 16x2 (opsional, diganti OLED)
+#include <Adafruit_AHTX0.h>        // Sensor AHT20
+#include <Adafruit_GFX.h>          // OLED graphics core
+#include <Adafruit_SSD1306.h>      // OLED 0.96" driver
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <AutoPID.h>
 #include "secret.h"
 
 // Pin Define
-#define DHTPIN 18
-#define DHTTYPE DHT22
-#define FAN_PWM_PIN 19
-#define HEATER_PWM_PIN 15
-#define RELAY_HUM_PIN 4
-#define SDA_PIN 21
-#define SCL_PIN 22
+// #define DHTPIN   18        // DHT22 dinonaktifkan
+// #define DHTTYPE  DHT22     // DHT22 dinonaktifkan
+#define HEATER_PWM_PIN  18   // Heater → Pin 18
+#define FAN_PWM_PIN     19   // Fan    → Pin 19
+#define RELAY_HUM_PIN   12   // Relay humidifier → Pin 12
+#define SDA_PIN         21
+#define SCL_PIN         22
+
+// OLED Config
+#define OLED_WIDTH   128
+#define OLED_HEIGHT   64
+#define OLED_ADDR   0x3C
+#define OLED_RESET    -1   // Tidak pakai pin reset
 
 // PID Config
 #define KP 15.0
@@ -32,8 +41,10 @@ double current_temp, current_hum;
 double heater_pwm_value;
 
 // Object Instances
-DHT dht(DHTPIN, DHTTYPE);
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+// DHT dht(DHTPIN, DHTTYPE);           // DHT22 dinonaktifkan
+// LiquidCrystal_I2C lcd(0x27, 16, 2); // LCD I2C 16x2 (opsional)
+Adafruit_AHTX0   aht;                  // Sensor AHT20
+Adafruit_SSD1306 oled(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET); // OLED 0.96"
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 Preferences preferences;

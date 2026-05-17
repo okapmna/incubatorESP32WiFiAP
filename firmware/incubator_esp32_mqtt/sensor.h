@@ -1,13 +1,18 @@
 #pragma once
 #include "config.h"
 
-// Baca sensor DHT22, jalankan PID, kontrol humidifier & update LCD
+// Baca sensor AHT20, jalankan PID, kontrol humidifier & update display
 void readSensorAndControl() {
-  current_temp = dht.readTemperature();
-  current_hum  = dht.readHumidity();
+
+  // ─── Baca AHT20 ───────────────────────────────────────────
+  sensors_event_t humidity_evt, temp_evt;
+  aht.getEvent(&humidity_evt, &temp_evt);   // humidity first, temp second
+
+  current_temp = temp_evt.temperature;
+  current_hum  = humidity_evt.relative_humidity;
 
   if (isnan(current_temp) || isnan(current_hum)) {
-    Serial.println("Gagal membaca dari sensor DHT22!");
+    Serial.println("Gagal membaca dari sensor AHT20!");
     return;
   }
 
@@ -28,14 +33,39 @@ void readSensorAndControl() {
     digitalWrite(RELAY_HUM_PIN, LOW);   // Mati jika kelembapan sudah mencapai target
   }
 
-  // ─── LCD Display ──────────────────────────────────────────
+  // ─── OLED Display (128x64) ────────────────────────────────
+  oled.clearDisplay();
+  oled.setTextColor(SSD1306_WHITE);
+
   if (wm.getConfigPortalActive()) {
-    lcd.setCursor(0, 0);
-    lcd.print("SETUP WIFI MODE ");
+    // Mode konfigurasi WiFi
+    oled.setTextSize(1);
+    oled.setCursor(10, 20);
+    oled.print("== WIFI SETUP ==");
+    oled.setCursor(8, 36);
+    oled.print("Connect: ESP32_AP");
   } else {
-    lcd.setCursor(0, 0);
-    lcd.print("T:" + String(current_temp, 1) + "C Set:" + String(target_temp, 1));
+    // Tampilan suhu besar di baris atas
+    oled.setTextSize(2);
+    oled.setCursor(0, 0);
+    oled.print("T:");
+    oled.print(current_temp, 1);
+    oled.print("C");
+
+    // Kelembapan di baris tengah
+    oled.setTextSize(2);
+    oled.setCursor(0, 20);
+    oled.print("H:");
+    oled.print(current_hum, 1);
+    oled.print("%");
+
+    // Target di baris bawah (kecil)
+    oled.setTextSize(1);
+    oled.setCursor(0, 48);
+    oled.print("Set T:");
+    oled.print(target_temp, 1);
+    oled.print(" H:");
+    oled.print(target_hum, 0);
   }
-  lcd.setCursor(0, 1);
-  lcd.print("H:" + String(current_hum, 1) + "% Set:" + String(target_hum, 0));
+  oled.display();
 }
