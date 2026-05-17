@@ -1,174 +1,39 @@
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <WiFiManager.h>
-#include <PubSubClient.h>
-// #include <DHT.h>
-// Replace DHT with AHT20
-#include <Adafruit_AHTX0.h>
-#include <LiquidCrystal_I2C.h>
-#include <Preferences.h>
-#include <ArduinoJson.h>
-#include <AutoPID.h>
-#include "secret.h"
-
-// Pin define
-// #define DHTPIN 18
-// #define DHTTYPE DHT22
-#define FAN_PWM_PIN 19
-#define HEATER_PWM_PIN 15
-#define RELAY_HUM_PIN 4
-#define SDA_PIN 21
-#define SCL_PIN 22
-
-// Variabel parameter temp n hum
-double target_temp = 37.0;
-double target_hum = 60.0;
-double current_temp, current_hum;
-double heater_pwm_value;
-
-// PID Config
-#define KP 15.0
-#define KI 0.5
-#define KD 20.0
-AutoPID myPID(&current_temp, &target_temp, &heater_pwm_value, 0, 255, KP, KI, KD);
-
-// Library object def
-// DHT dht(DHTPIN, DHTTYPE);
-Adafruit_AHTX0 aht;
-LiquidCrystal_I2C lcd(0x27, 16, 2);
-WiFiClientSecure espClient;
-PubSubClient client(espClient);
-Preferences preferences;
-
-WiFiManager wm;
-
-// Time variable
-unsigned long lastSensorRead = 0;
-unsigned long lastMqttPublish = 0;
-unsigned long lastWifiCheck = 0;
-
-// Recive/Subscribe MQTT
-void callback(char* topic, byte* payload, unsigned int length) {
-
-  // Convert payload to string & text check
-  String message = "";
-  for (unsigned int i = 0; i < length; i++) {
-    message += (char)payload[i];
-  }
-  Serial.print("Message received: ");
-  Serial.println(message);
-
-  // dev_getinfo message handler
-  if (message == "dev_getinfo") {
-    StaticJsonDocument<200> docResp;
-    // Masukkan data target saat ini ke JSON
-    docResp["target_temp"] = target_temp;
-    docResp["target_hum"] = target_hum;
-
-    char buffer[200];
-    serializeJson(docResp, buffer);
-
-    // Kirim balik ke topik data
-    // Send back to data topic
-    client.publish(mqtt_topic_data, buffer);
-    Serial.println("Respon 'dev_getinfo' sent!");
-    return;  // STOP di sini, jangan lanjut ke deserializeJson di bawah
-  }
-
-  // set target temp & hum
-  StaticJsonDocument<200> doc;
-  DeserializationError error = deserializeJson(doc, payload, length);
-
-  if (!error) {
-    if (doc.containsKey("target_temp")) {
-      target_temp = doc["target_temp"];
-      preferences.putDouble("t_temp", target_temp);
-    }
-    if (doc.containsKey("target_hum")) {
-      target_hum = doc["target_hum"];
-      preferences.putDouble("t_hum", target_hum);
-    }
-    Serial.println("Target updated from MQTT and saved.");
-  } else {
-    Serial.println("Not valid JSON and unknown command.");
-  }
-}
-
-// Fungsi Reconect
-unsigned long lastMqttReconnectAttempt = 0;
-void reconnect() {
-  unsigned long now = millis();
-  if (now - lastMqttReconnectAttempt > 5000) {
-    lastMqttReconnectAttempt = now;
-    Serial.print("Menghubungkan ke MQTT...");
-    String clientId = "ESP32-Incubator-" + String(random(0xffff), HEX);
-
-    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
-      Serial.println("Terhubung!");
-      // Pastikan subscribe ke topik yang benar untuk menerima perintah
-      // Ensure topic is correct to receive commands
-      client.subscribe(mqtt_topic_con);
-    } else {
-      Serial.print("Gagal, rc=");
-      Serial.print(client.state());
-      Serial.println(" Coba lagi nanti (Non-Blocking)");
-    }
-  }
-}
+#include "config.h"
+#include "wifi_setup.h"
+#include "mqtt_handler.h"
+#include "sensor.h"
 
 void setup() {
   Serial.begin(115200);
 
-  // Setup LCD n I2C
+  // LCD & I2C
   Wire.begin(SDA_PIN, SCL_PIN);
   lcd.init();
   lcd.backlight();
   lcd.setCursor(0, 0);
   lcd.print("Initializing...");
 
-  // Setup PWM
+  // PWM & Relay
   pinMode(RELAY_HUM_PIN, OUTPUT);
   ledcAttach(FAN_PWM_PIN, 5000, 8);
   ledcAttach(HEATER_PWM_PIN, 5000, 8);
 
-  // Setup heater
+  // PID
   myPID.setBangBang(0.5);
 
-  // dht.begin();
+  // DHT22
+  dht.begin();
+  Serial.println("DHT22 Ditemukan dan Dimulai.");
 
-  // AHT20 Setup
-  if (!aht.begin()) {
-    Serial.println("Gagal menemukan sensor AHT20! Cek kabel.");
-    lcd.setCursor(0, 0);
-    lcd.print("Sensor Error!");
-    while (1) delay(10);
-  }
-  Serial.println("AHT20 Ditemukan.");
-
-  // Load Preferences
+  // Load Preferences (NVS)
   preferences.begin("incubator", false);
   target_temp = preferences.getDouble("t_temp", 37.0);
-  target_hum = preferences.getDouble("t_hum", 60.0);
+  target_hum  = preferences.getDouble("t_hum",  60.0);
 
-  // Wifi Manager setup
-  lcd.setCursor(0, 0);
-  lcd.print("WiFi Config...");
+  // WiFi
+  setupWifi();
 
-  wm.setConfigPortalBlocking(false);
-
-  if (wm.autoConnect("ESP32_Incubator_AP")) {
-    Serial.println("Terhubung ke WiFi (Boot)");
-    lcd.setCursor(0, 0);
-    lcd.print("WiFi Connected");
-  } else {
-    Serial.println("WiFi Config Portal Aktif");
-    lcd.setCursor(0, 0);
-    lcd.print("Connect AP: ESP32");
-  }
-  delay(1000);
-  lcd.clear();
-
-  // Konfigurasi SSL MQTT
+  // MQTT SSL
   espClient.setInsecure();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
@@ -179,19 +44,13 @@ void loop() {
 
   unsigned long now = millis();
 
-  // Cek koneksi wifi
-  // WiFi Check
+  // WiFi check setiap 1 detik
   if (now - lastWifiCheck >= 1000) {
     lastWifiCheck = now;
-    if (WiFi.status() != WL_CONNECTED) {
-      if (!wm.getConfigPortalActive()) {
-        Serial.println("WiFi Putus! Memulai Config Portal...");
-        wm.startConfigPortal("ESP32_Incubator_AP");
-      }
-    }
+    handleWifiCheck();
   }
 
-  // Reconnect MQTT if WiFi connected
+  // MQTT reconnect / loop
   if (WiFi.status() == WL_CONNECTED) {
     if (!client.connected()) {
       reconnect();
@@ -200,74 +59,15 @@ void loop() {
     }
   }
 
-  // Baca Sensor & Kontrol PID
-  // Sensor Read & PID Control
-  if (now - lastSensorRead >= 750) {
-
-    // current_temp = dht.readTemperature(); // <-- DHT COMMANDED
-    // current_hum = dht.readHumidity();     // <-- DHT COMMANDED
-
-    // AHT20 READ
-    sensors_event_t humidity, temp;
-    aht.getEvent(&humidity, &temp);  // Mengambil data sensor
-
-    current_temp = temp.temperature;
-    current_hum = humidity.relative_humidity;
-
-    if (!isnan(current_temp) && !isnan(current_hum)) {
-      // Jalankan PID untuk Pemanas
-      // Run PID for Heater
-      myPID.run();
-      int final_pwm = (int)heater_pwm_value;
-      if (current_temp < target_temp && final_pwm < 15) {
-        final_pwm = 120;
-      }
-
-      ledcWrite(HEATER_PWM_PIN, final_pwm);
-      // ledcWrite(HEATER_PWM_PIN, (int)heater_pwm_value);
-
-      ledcWrite(FAN_PWM_PIN, 250);
-
-      // Kontrol Humidifier
-      // Humidifier Control
-      if (current_hum <= (target_hum - 2.0)) {
-        // Nyala jika kelembapan drop di bawah target - toleransi
-        // Turn on if humidity drop below target - tolerance
-        digitalWrite(RELAY_HUM_PIN, HIGH);
-      } else if (current_hum >= target_hum) {
-        // Mati jika kelembapan sudah mencapai target
-        // Turn off if humidity reach target
-        digitalWrite(RELAY_HUM_PIN, LOW);
-      }
-
-      // Tampilan LCD
-      // LCD Display
-      if (wm.getConfigPortalActive()) {
-        lcd.setCursor(0, 0);
-        lcd.print("SETUP WIFI MODE ");
-      } else {
-        lcd.setCursor(0, 0);
-        lcd.print("T:" + String(current_temp, 1) + "C Set:" + String(target_temp, 1));
-      }
-
-      lcd.setCursor(0, 1);
-      lcd.print("H:" + String(current_hum, 1) + "% Set:" + String(target_hum, 0));
-    }
+  // Baca sensor & kontrol PID setiap 2 detik
+  if (now - lastSensorRead >= 2000) {
+    readSensorAndControl();
     lastSensorRead = now;
   }
 
-  // Publish Data JSON ke MQTT Setiap 5 Detik
-  // Publish Data JSON to MQTT every 5 seconds
+  // Publish data ke MQTT setiap 5 detik
   if (now - lastMqttPublish >= 5000) {
-    if (WiFi.status() == WL_CONNECTED && client.connected() && !isnan(current_temp)) {
-      StaticJsonDocument<200> doc;
-      doc["temperature"] = current_temp;
-      doc["humidity"] = current_hum;
-
-      char buffer[200];
-      serializeJson(doc, buffer);
-      client.publish(mqtt_topic_data, buffer);
-    }
+    publishSensorData();
     lastMqttPublish = now;
   }
 }
