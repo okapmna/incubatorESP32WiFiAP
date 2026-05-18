@@ -2,6 +2,7 @@
 #include "wifi_setup.h"
 #include "mqtt_handler.h"
 #include "sensor.h"
+#include "menu.h"
 
 void setup() {
   Serial.begin(115200);
@@ -19,6 +20,9 @@ void setup() {
     oled.display();
     Serial.println("OLED SSD1306 OK.");
   }
+
+  // Setup Menu (Rotary Encoder & Display)
+  setupMenu();
 
   // ─── LCD I2C 16x2 ────────────────────────────────────────
   lcd.init();
@@ -58,6 +62,9 @@ void setup() {
 
 void loop() {
   wm.process();
+
+  // Handle menu & rotary encoder
+  handleMenu();
 
   unsigned long now = millis();
 

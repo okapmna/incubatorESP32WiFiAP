@@ -23,6 +23,11 @@
 #define SDA_PIN         21
 #define SCL_PIN         22
 
+// Rotary Encoder Pins
+#define ROTARY_CLK_PIN  25
+#define ROTARY_DT_PIN   26
+#define ROTARY_SW_PIN   27
+
 // OLED Config
 #define OLED_WIDTH   128
 #define OLED_HEIGHT   64
@@ -39,6 +44,10 @@ double target_temp = 37.0;
 double target_hum = 60.0;
 double current_temp, current_hum;
 double heater_pwm_value;
+
+// Menu Variables
+volatile int encoderValue = 0;
+volatile bool buttonPressed = false;
 
 // Object Instances
 // DHT dht(DHTPIN, DHTTYPE);           // DHT22 dinonaktifkan

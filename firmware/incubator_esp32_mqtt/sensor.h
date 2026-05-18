@@ -33,45 +33,6 @@ void readSensorAndControl() {
     digitalWrite(RELAY_HUM_PIN, LOW);   // Mati jika kelembapan sudah mencapai target
   }
 
-  // ─── OLED Display (128x64) ────────────────────────────────
-  oled.clearDisplay();
-  oled.setTextColor(SSD1306_WHITE);
-
-  // Status WiFi di pojok kanan atas (Area warna putih pada OLED dual-color, y=0 s/d 15)
-  oled.setTextSize(1);
-  oled.setCursor(80, 0); // x=80 (kanan), y=0 (atas)
-  if (WiFi.status() == WL_CONNECTED) {
-    oled.print("WiFi:OK");
-  } else if (wm.getConfigPortalActive()) {
-    oled.print("WiFi:AP");
-  } else {
-    oled.print("WiFi:DC");
-  }
-
-  // ─── Area bawah (Warna biru pada OLED dual-color, y=16 s/d 63) ───
-  // Suhu — teks besar
-  oled.setTextSize(2);
-  oled.setCursor(0, 18);
-  oled.print("T:");
-  oled.print(current_temp, 1);
-  oled.print("C");
-
-  // Kelembapan di baris tengah
-  oled.setTextSize(2);
-  oled.setCursor(0, 36);
-  oled.print("H:");
-  oled.print(current_hum, 1);
-  oled.print("%");
-
-  // Target di baris bawah (kecil)
-  oled.setTextSize(1);
-  oled.setCursor(0, 54);
-  oled.print("Set T:");
-  oled.print(target_temp, 1);
-  oled.print(" H:");
-  oled.print(target_hum, 0);
-  
-  oled.display();
 
   // ─── LCD I2C 16x2 Display ────────────────────────────────
   // LCD selalu menampilkan suhu dan kelembapan
