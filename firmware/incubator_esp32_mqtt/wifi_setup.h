@@ -1,7 +1,7 @@
 #pragma once
 #include "config.h"
 
-// ─── WiFiManager Setup (dipanggil di setup()) ─────────────────
+// WiFiManager Setup (dipanggil di setup())
 void setupWifi() {
   wm.setConfigPortalBlocking(false);
 
@@ -12,8 +12,7 @@ void setupWifi() {
   }
 }
 
-
-// ─── WiFi Reconnect Check (dipanggil di loop()) ───────────────
+// WiFi Reconnect Check (dipanggil di loop())
 void handleWifiCheck() {
   if (WiFi.status() != WL_CONNECTED) {
     if (!wm.getConfigPortalActive()) {

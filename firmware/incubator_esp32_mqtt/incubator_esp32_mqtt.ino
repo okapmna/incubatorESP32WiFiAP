@@ -7,7 +7,7 @@
 void setup() {
   Serial.begin(115200);
 
-  // ─── I2C & OLED 0.96" ────────────────────────────────────
+  // I2C & OLED 0.96"
   Wire.begin(SDA_PIN, SCL_PIN);
   if (!oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
     Serial.println("OLED SSD1306 tidak ditemukan!");
@@ -24,7 +24,7 @@ void setup() {
   // Setup Menu (Rotary Encoder & Display)
   setupMenu();
 
-  // ─── LCD I2C 16x2 ────────────────────────────────────────
+  // LCD I2C 16x2
   lcd.init();
   lcd.backlight();
   lcd.setCursor(0, 0);
@@ -39,7 +39,7 @@ void setup() {
   // PID
   myPID.setBangBang(0.5);
 
-  // ─── AHT20 ────────────────────────────────────────────────
+  // AHT20
   if (!aht.begin()) {
     Serial.println("Sensor AHT20 tidak ditemukan! Periksa wiring.");
   } else {

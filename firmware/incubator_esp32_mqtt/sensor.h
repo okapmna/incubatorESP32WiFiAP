@@ -36,8 +36,13 @@ void readSensorAndControl() {
 
   // ─── LCD I2C 16x2 Display ────────────────────────────────
   // LCD selalu menampilkan suhu dan kelembapan
+  String line1 = "T:" + String(current_temp, 1) + "C Set:" + String(target_temp, 1);
+  while (line1.length() < 16) line1 += " ";
   lcd.setCursor(0, 0);
-  lcd.print("T:" + String(current_temp, 1) + "C Set:" + String(target_temp, 1));
+  lcd.print(line1);
+
+  String line2 = "H:" + String(current_hum, 1) + "% Set:" + String((int)target_hum);
+  while (line2.length() < 16) line2 += " ";
   lcd.setCursor(0, 1);
-  lcd.print("H:" + String(current_hum, 1) + "% Set:" + String(target_hum, 0));
+  lcd.print(line2);
 }
