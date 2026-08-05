@@ -1,110 +1,115 @@
-# Smart EGG Incubator ESP32
+# Smart EGG Incubator ESP32 — MQTT (IoT)
 
-Welcome to the Smart Incubator repository. This project aims to automatically monitor and control the temperature and humidity of an egg incubator.
+Monitoring dan kontrol inkubator telur otomatis berbasis **ESP32** dengan koneksi **MQTT (IoT)**. Data suhu & kelembapan dikirim real-time ke broker MQTT dan dapat dikontrol dari mana saja via dashboard seperti [Unimon-dashboard](https://github.com/okapmna/unimon-dashboard.git) atau Node-RED.
 
-This repository provides **2 Versions** of the system that you can choose from according to your needs:
-1.  **MQTT (IoT) Version:** Remote control and monitoring via the internet. It can be controlled with universal dashboards such as [Unimon-dashboard](https://github.com/okapmna/unimon-dashboard.git) and Node-RED.
-2.  **WiFi AP (Access Point) Version:** Direct control without the internet (local).
+## Fitur Utama
 
-   
+- **WiFiManager:** Koneksi WiFi mudah tanpa hardcode — cukup buka portal konfigurasi AP `ESP32_Incubator_AP`.
+- **Internet Access:** Monitor dan kontrol dari mana saja.
+- **MQTT Pub/Sub:** Data suhu/kelembapan dikirim real-time ke broker.
+- **Menu OLED + Rotary Encoder:** Set target suhu & kelembapan langsung dari perangkat.
+- **Kontrol Otomatis:**
+  - **PID Heater:** PWM heater dijaga pada target suhu.
+  - **Humidifier:** Relay nyala/mati otomatis berdasarkan target kelembapan.
+  - **Fan:** Nyala terus menerus (bisa disesuaikan).
+- **Status Sync:** Target suhu/kelembapan tersinkron dengan dashboard.
+- **NVS (Preferences):** Pengaturan target tersimpan permanen di memori.
 
-<details>
-<summary><h2>1. Incubator ESP32 MQTT (IoT)</h2></summary>
+## Hardware & Komponen
 
-### Description
-This version connects the ESP32 to the internet via your home WiFi and sends data to an MQTT Broker. This allows you to monitor the incubator remotely (outside the house) using an IoT dashboard.
+- ESP32 Development Board
+- Sensor AHT20 (Suhu & Kelembapan, I2C)
+- OLED SSD1306 0.96" (I2C)
+- LCD I2C 16x2
+- Rotary Encoder (dengan tombol)
+- AOD4148 MOSFET (kontrol heater PWM)
+- L298N Motor Driver (kontrol fan PWM)
+- Relay Module (kontrol humidifier)
+- Power supply 5V / 12V
 
-### Key Features
-* **WiFiManager:** Can be used anywhere without the need for hardcoded Wi-Fi configurations.
-* **Internet Access:** Monitor from anywhere.
-* **MQTT Pub/Sub:** Real-time temperature data transmission to the broker.
-* **Status Synchronization:** Lamp and fan statuses are synchronized with the dashboard.
+## Pin Configuration
 
-### Hardware & Components
-* *Same as the WiFi AP version (See below).*
-
-### Pin Configuration
-| Component | ESP32 Pin | Description |
+| Komponen | GPIO ESP32 | Deskripsi |
 | :--- | :--- | :--- |
-| **DHT22** | GPIO 18 | Sensor Data (Temperature & Humidity) |
-| **L298N Motor Driver** | GPIO 19 | FAN Control (IN1) |
-| **AOD4148 MOSFET** | GPIO 15 | HEATER Control |
-| **Relay Module** | GPIO 05 | HUMIDIFIER Control (IN1) |
+| **HEATER** | GPIO 18 | PWM Heater (MOSFET) |
+| **FAN** | GPIO 19 | PWM Fan |
+| **RELAY_HUM** | GPIO 12 | Relay Humidifier |
+| **SDA** | GPIO 21 | I2C Data (OLED, LCD, AHT20) |
+| **SCL** | GPIO 22 | I2C Clock (OLED, LCD, AHT20) |
+| **Rotary CLK** | GPIO 25 | Encoder |
+| **Rotary DT** | GPIO 26 | Encoder |
+| **Rotary SW** | GPIO 27 | Tombol Encoder |
 
-### How to Use
-1.  Open the **MQTT** version code file.
-2.  Edit the WiFi credentials and MQTT Broker section:
-    ```cpp
-    const char* mqtt_server = "your.mqtt.server";
-    const int mqtt_port = 8883;
-    const char* mqtt_user = "incubator_user";
-    const char* mqtt_pass = "incubator_pass";
-    ```
-3.  Upload it to the ESP32.
-4.  Use an MQTT Dashboard application (such as MQTT Dash, IoT MQTT Panel, or Node-RED) and subscribe to the specified topics.
+## Menjalankan di PlatformIO
 
-### Circuit Schematic and Device Real Picture
+Struktur project mengikuti standar PlatformIO.
+
+```bash
+# Install dependencies & build
+pio run
+
+# Upload ke ESP32
+pio run -t upload
+
+# Monitor serial
+pio monitor
+```
+
+Kredensial MQTT & WiFi diatur lewat **WiFiManager** (pertama kali boot, konek ke AP `ESP32_Incubator_AP` untuk mengisi SSID/password WiFi).
+
+Kredensial MQTT disimpan di `include/secret.h` — salin dari `include/secret-example.h` lalu isi server/port/user/pass dan topic.
+
+## Menjalankan di Arduino IDE
+
+Untuk versi sketch klasik Arduino IDE, gunakan branch **`arduino-ide`**.
+
+1. `git checkout arduino-ide`
+2. Buka file `firmware/incubator_esp32_mqtt/incubator_esp32_mqtt.ino` di Arduino IDE.
+3. Instal library berikut lewat Library Manager:
+   - ArduinoJson (bblanchon)
+   - PubSubClient (knolleary)
+   - WiFiManager (tzapu)
+   - LiquidCrystal I2C
+   - Adafruit AHTX0
+   - Adafruit GFX Library
+   - Adafruit SSD1306
+   - AutoPID
+4. Salin `secret-example.h` → `secret.h` lalu isi kredensial MQTT.
+5. Pilih board **ESP32 Dev Module** dan upload.
+
+## MQTT Topics
+
+| Topic | Arah | Isi |
+| :--- | :--- | :--- |
+| `incubator/xx/data` | Publish | Data sensor (`temperature`, `humidity`) |
+| `incubator/xx/con` | Subscribe | Perintah kontrol |
+
+Perintah yang didukung di topic `con`:
+
+- Kirim teks `dev_getinfo` → perangkat membalas nilai target saat ini.
+- Kirim JSON untuk update target, contoh:
+  ```json
+  { "target_temp": 38.5, "target_hum": 65 }
+  ```
+  Nilai target otomatis disimpan ke NVS.
+
+> Ganti `xx` di topic dengan ID perangkat kamu.
+
+## Kode Lama (WiFi AP)
+
+Kode inkubator versi WiFi Access Point (tanpa internet) yang lama diarsipkan di **`old_code/inkubatorAP.ino`** dan **tidak lagi dikembangkan**.
+
+## Schematic & Dokumentasi
+
+**Schematic Inkubator:**
+<br>
 <img width="800" alt="Incubator Schematic" src="schematics/skematik1.png" />
+
+**Gambar Asli:**
+<br>
 <img width="800" alt="Incubator Real Picture" src="images/incubator32IoT.jpeg" />
 
-</details>
+## Kontributor
 
-<details>
-<summary><h2>2. Incubator ESP32 WiFi AP </h2></summary>
-
-### Description
-This version sets the ESP32 as an Access Point (Hotspot). Users connect directly to the WiFi broadcasted by the ESP32 to open the control web page. It is highly suitable for areas without a stable internet connection.
-
-The web interface allows you to adjust the temperature, humidity, lamps, and incubation timer.
-
-### Key Features
-* **Real-time Monitoring:** Temperature and humidity readings via DHT11.
-* **Lamp Control:** Automation via Relay.
-* **Fan Control:** Manual or automatic speed adjustment based on temperature.
-* **Incubation Timer:** Counts operational days since starting.
-* **Web Interface:** Control dashboard via browser (no app installation required).
-
-### Hardware & Components
-* ESP32 Development Board
-* DHT11 Temperature & Humidity Sensor
-* 1-Channel Relay Module
-* 12V DC Fan
-* Motor Driver (for fan speed control)
-* RTC DS1302 (Real-time Clock Module)
-* Jumper Wires
-* 5V Adapter & 12V Power Supply (for the fan)
-
-### Pin Configuration
-
-| Component | ESP32 Pin | Description |
-| :--- | :--- | :--- |
-| **DHT11** | GPIO 23 | Sensor Data |
-| **Relay** | GPIO 18 | Lamp Control |
-| **DC Fan** | GPIO 19 | PWM Fan Control |
-| **RTC DS1302** | GPIO 4 | DATA |
-| **RTC DS1302** | GPIO 5 | CLK |
-| **RTC DS1302** | GPIO 2 | RST |
-
-### How to Use
-1.  Upload the **WiFi AP** version code to the ESP32.
-2.  Turn on the device.
-3.  Connect your phone/laptop to the WiFi using the following credentials:
-    * **SSID:** `NYUDISSS`
-    * **Password:** `87654321C`
-4.  Open a browser and access `index.html` (or the static IP address if set, usually `192.168.4.1`).
-5.  The dashboard will appear, allowing you to monitor the temperature, control the lamp, and set the timer.
-
-### Schematics & Documentation
-**Circuit Schematic:**
-<br>
-<img width="800" alt="Incubator Schematic" src="schematics/skematik2.png" />
-
-**Poster & Real Picture:**
-<br>
-<img width="400" alt="Documentation Poster" src="https://github.com/user-attachments/assets/2dbddeca-c2ca-453d-af8a-b3c1678c55ac" />
-</details>
-
-
-## Contributors
 - **Oka Pmna** - [@okapmna](https://github.com/okapmna)
 - **IDA BAGUS WILLI PARMITA** - [@WILIOP-666](https://github.com/WILIOP-666)
