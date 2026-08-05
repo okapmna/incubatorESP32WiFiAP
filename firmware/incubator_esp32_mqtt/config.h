@@ -6,7 +6,8 @@
 #include <PubSubClient.h>
 // #include <DHT.h>          // DHT22 dinonaktifkan, diganti AHT20
 #include <LiquidCrystal_I2C.h>     // LCD I2C 16x2 (addr 0x27)
-#include <Adafruit_AHTX0.h>        // Sensor AHT20
+#include <Adafruit_SHT31.h>
+// #include <Adafruit_AHTX0.h>        // Sensor AHT20
 #include <Adafruit_GFX.h>          // OLED graphics core
 #include <Adafruit_SSD1306.h>      // OLED 0.96" driver
 #include <Preferences.h>
@@ -42,8 +43,21 @@
 // Variabel Parameter Temp & Hum
 double target_temp = 37.0;
 double target_hum = 60.0;
+int target_fan_speed = 100;
 double current_temp, current_hum;
 double heater_pwm_value;
+
+// Servo Config & State
+#define SERVO_PIN 13
+#define SERVO_MODE_JADWAL 0
+#define SERVO_MODE_SWING 1
+int servo_mode = SERVO_MODE_JADWAL;
+int servo_interval_hours = 3;
+bool servo_direction_cw = true;
+float current_servo_pos = 0.0;
+float target_servo_pos = 0.0;
+unsigned long last_servo_mode_change = 0;
+unsigned long last_servo_update_time = 0;
 
 // Menu Variables
 volatile int encoderValue = 0;
@@ -52,7 +66,8 @@ volatile bool buttonPressed = false;
 // Object Instances
 // DHT dht(DHTPIN, DHTTYPE);           // DHT22 dinonaktifkan
 LiquidCrystal_I2C lcd(0x27, 16, 2);    // LCD I2C 16x2
-Adafruit_AHTX0   aht;                  // Sensor AHT20
+Adafruit_SHT31   sht30;
+// Adafruit_AHTX0   aht;                  // Sensor AHT20
 Adafruit_SSD1306 oled(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET); // OLED 0.96"
 WiFiClientSecure espClient;
 PubSubClient client(espClient);

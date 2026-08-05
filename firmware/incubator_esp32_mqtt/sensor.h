@@ -5,14 +5,22 @@
 void readSensorAndControl() {
 
   // ─── Baca AHT20 ───────────────────────────────────────────
-  sensors_event_t humidity_evt, temp_evt;
-  aht.getEvent(&humidity_evt, &temp_evt);  // humidity first, temp second
+  // sensors_event_t humidity_evt, temp_evt;
+  // aht.getEvent(&humidity_evt, &temp_evt);  // humidity first, temp second
+  // 
+  // current_temp = temp_evt.temperature;
+  // current_hum  = humidity_evt.relative_humidity;
+  // 
+  // if (isnan(current_temp) || isnan(current_hum)) {
+  //   Serial.println("Gagal membaca dari sensor AHT20!");
+  //   return;
+  // }
 
-  current_temp = temp_evt.temperature;
-  current_hum  = humidity_evt.relative_humidity;
+  current_temp = sht30.readTemperature();
+  current_hum  = sht30.readHumidity();
 
   if (isnan(current_temp) || isnan(current_hum)) {
-    Serial.println("Gagal membaca dari sensor AHT20!");
+    Serial.println("Gagal membaca dari sensor SHT30!");
     return;
   }
 
@@ -24,7 +32,8 @@ void readSensorAndControl() {
     final_pwm = 120;
   }
   ledcWrite(HEATER_PWM_PIN, final_pwm);
-  ledcWrite(FAN_PWM_PIN, 250);
+  int fan_pwm = map(target_fan_speed, 0, 100, 0, 255);
+  ledcWrite(FAN_PWM_PIN, fan_pwm);
 
   // ─── Humidifier Control ───────────────────────────────────
   if (current_hum <= (target_hum - 1.0)) {

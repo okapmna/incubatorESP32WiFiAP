@@ -2,6 +2,7 @@
 #include "wifi_setup.h"
 #include "mqtt_handler.h"
 #include "sensor.h"
+#include "servo_control.h"
 #include "menu.h"
 
 void setup() {
@@ -40,16 +41,27 @@ void setup() {
   myPID.setBangBang(0.5);
 
   // AHT20
-  if (!aht.begin()) {
-    Serial.println("Sensor AHT20 tidak ditemukan! Periksa wiring.");
+  // if (!aht.begin()) {
+  //   Serial.println("Sensor AHT20 tidak ditemukan! Periksa wiring.");
+  // } else {
+  //   Serial.println("AHT20 Ditemukan dan Dimulai.");
+  // }
+
+  if (!sht30.begin(0x44)) {
+    Serial.println("Sensor SHT30 tidak ditemukan! Periksa wiring.");
   } else {
-    Serial.println("AHT20 Ditemukan dan Dimulai.");
+    Serial.println("SHT30 Ditemukan dan Dimulai.");
   }
 
   // Load Preferences (NVS)
   preferences.begin("incubator", false);
   target_temp = preferences.getDouble("t_temp", 37.0);
   target_hum  = preferences.getDouble("t_hum",  60.0);
+  target_fan_speed = preferences.getInt("t_fan", 100);
+  if (target_fan_speed > 100) target_fan_speed = 100;
+
+  // Servo Setup
+  setupServo();
 
   // WiFi
   setupWifi();
@@ -65,6 +77,9 @@ void loop() {
 
   // Handle menu & rotary encoder
   handleMenu();
+
+  // Update servo movement
+  updateServo();
 
   unsigned long now = millis();
 
