@@ -18,7 +18,7 @@ Monitoring dan kontrol inkubator telur otomatis berbasis **ESP32** dengan koneks
 ## Hardware & Komponen
 
 - ESP32 Development Board
-- Sensor AHT20 (Suhu & Kelembapan, I2C)
+- Sensor SHT30 (Suhu & Kelembapan, I2C)
 - OLED SSD1306 0.96" (I2C)
 - LCD I2C 16x2
 - Rotary Encoder (dengan tombol)
@@ -34,8 +34,8 @@ Monitoring dan kontrol inkubator telur otomatis berbasis **ESP32** dengan koneks
 | **HEATER** | GPIO 18 | PWM Heater (MOSFET) |
 | **FAN** | GPIO 19 | PWM Fan |
 | **RELAY_HUM** | GPIO 12 | Relay Humidifier |
-| **SDA** | GPIO 21 | I2C Data (OLED, LCD, AHT20) |
-| **SCL** | GPIO 22 | I2C Clock (OLED, LCD, AHT20) |
+| **SDA** | GPIO 21 | I2C Data (OLED, LCD, SHT30) |
+| **SCL** | GPIO 22 | I2C Clock (OLED, LCD, SHT30) |
 | **Rotary CLK** | GPIO 25 | Encoder |
 | **Rotary DT** | GPIO 26 | Encoder |
 | **Rotary SW** | GPIO 27 | Tombol Encoder |
@@ -70,7 +70,7 @@ Untuk versi sketch klasik Arduino IDE, gunakan branch **`arduino-ide`**.
    - PubSubClient (knolleary)
    - WiFiManager (tzapu)
    - LiquidCrystal I2C
-   - Adafruit AHTX0
+   - Adafruit SHT31 Library
    - Adafruit GFX Library
    - Adafruit SSD1306
    - AutoPID

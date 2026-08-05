@@ -1,18 +1,15 @@
 #pragma once
 #include "config.h"
 
-// Baca sensor AHT20, jalankan PID, kontrol humidifier & update OLED
+// Baca sensor SHT30, jalankan PID, kontrol humidifier & update OLED
 void readSensorAndControl() {
 
-  // ─── Baca AHT20 ───────────────────────────────────────────
-  sensors_event_t humidity_evt, temp_evt;
-  aht.getEvent(&humidity_evt, &temp_evt);  // humidity first, temp second
-
-  current_temp = temp_evt.temperature;
-  current_hum  = humidity_evt.relative_humidity;
+  // ─── Baca SHT30 ───────────────────────────────────────────
+  current_temp = sht30.readTemperature();
+  current_hum  = sht30.readHumidity();
 
   if (isnan(current_temp) || isnan(current_hum)) {
-    Serial.println("Gagal membaca dari sensor AHT20!");
+    Serial.println("Gagal membaca dari sensor SHT30!");
     return;
   }
 
