@@ -39,11 +39,11 @@ void setup() {
   // PID
   myPID.setBangBang(0.5);
 
-  // AHT20
-  if (!aht.begin()) {
-    Serial.println("Sensor AHT20 tidak ditemukan! Periksa wiring.");
+  // SHT30
+  if (!sht30.begin(0x44)) {
+    Serial.println("Sensor SHT30 tidak ditemukan! Periksa wiring.");
   } else {
-    Serial.println("AHT20 Ditemukan dan Dimulai.");
+    Serial.println("SHT30 Ditemukan dan Dimulai.");
   }
 
   // Load Preferences (NVS)
