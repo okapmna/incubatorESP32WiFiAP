@@ -1,4 +1,3 @@
-#include <Arduino.h>
 #include "config.h"
 #include "wifi_setup.h"
 #include "mqtt_handler.h"
