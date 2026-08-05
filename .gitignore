@@ -1,1 +1,4 @@
-firmware/incubator_esp32_mqtt/secret.h
+secret.h
+
+# PlatformIO build artifacts
+.pio/
