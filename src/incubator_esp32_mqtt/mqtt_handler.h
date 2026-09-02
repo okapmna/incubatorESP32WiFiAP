@@ -1,9 +1,7 @@
 #pragma once
 #include "config.h"
 
-// MQTT Subscribe Callback
 void callback(char* topic, byte* payload, unsigned int length) {
-  // Convert payload ke String
   String message = "";
   for (unsigned int i = 0; i < length; i++) {
     message += (char)payload[i];
@@ -11,7 +9,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print("Message received: ");
   Serial.println(message);
 
-  // Handler perintah dev_getinfo: kirim balik nilai target saat ini
   if (message == "dev_getinfo") {
     StaticJsonDocument<200> docResp;
     docResp["target_temp"] = target_temp;
@@ -23,7 +20,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // Handler JSON: update target temp / hum & simpan ke Memory permanen
   StaticJsonDocument<200> doc;
   DeserializationError error = deserializeJson(doc, payload, length);
   if (!error) {
@@ -41,7 +37,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-// MQTT Reconnect (Non-Blocking)
 void reconnect() {
   unsigned long now = millis();
   if (now - lastMqttReconnectAttempt > 5000) {
@@ -59,7 +54,6 @@ void reconnect() {
   }
 }
 
-// Publish Data Sensor ke MQTT
 void publishSensorData() {
   if (WiFi.status() == WL_CONNECTED && client.connected() && !isnan(current_temp)) {
     StaticJsonDocument<200> doc;

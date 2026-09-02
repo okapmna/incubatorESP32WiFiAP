@@ -1,1 +1,5 @@
-firmware/incubator_esp32_mqtt/secret.h
+src/incubator_esp32_mqtt/secret.h
+src/inkubatorAP/secret.h
+.pio/
+.pioenvs/
+.piolibdeps/
