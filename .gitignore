@@ -2,3 +2,4 @@ secret.h
 
 # PlatformIO build artifacts
 .pio/
+.agents
