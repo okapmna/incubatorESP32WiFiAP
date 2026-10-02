@@ -1,13 +1,16 @@
-// ═══════════════════════════════════════════════════════════════════
-//  Incubator ESP32 — Single File Firmware
-//  Display : ST7735S 1.8" TFT  Portrait 128×160 (Hardware SPI / HSPI)
-//  Sensor  : SHT30
-//  Control : PID Heater  |  Relay Humidifier  |  Fan PWM  |  Servo
-//  Network : WiFiManager + MQTT (TLS)  → jalan di task core 0
-//  Encoder : Quadrature state-table (akurat, tanpa delay)
-// ═══════════════════════════════════════════════════════════════════
+/**
+ * @file incubator_firmware.ino
+ * @brief Firmware Inkubator ESP32 (Satu File)
+ * 
+ * Hardware: Layar ST7735S 128x160 portrait (HSPI), Sensor SHT30, Rotary Encoder KY-040
+ * Kontrol: Pemanas (PID), Humidifier (Relay), Kipas (PWM), Pembalik Telur (Servo)
+ * Jaringan: WiFiManager + MQTT TLS (berjalan di Core 0 agar UI di Core 1 tidak macet)
+ * Penyimpanan: Pengaturan tersimpan di NVS (Non-Volatile Storage)
+ */
 
-// ─── Libraries ────────────────────────────────────────────────────
+// ==============================================================================
+// 1. LIBRARY & KONFIGURASI HARDWARE
+// ==============================================================================
 #include <SPI.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -21,50 +24,30 @@
 #include <AutoPID.h>
 #include "secret.h"
 
-// ─── Pin Define ───────────────────────────────────────────────────
-#define HEATER_PWM_PIN  18
-#define FAN_PWM_PIN     19
-#define RELAY_HUM_PIN   12
-#define SERVO_PIN        4
+// --- Pin Aktuator ---
+#define HEATER_PWM_PIN  18  // Pemanas (PWM)
+#define FAN_PWM_PIN     19  // Kipas (PWM)
+#define RELAY_HUM_PIN   12  // Humidifier (Relay)
+#define SERVO_PIN        4  // Servo (PWM 50Hz)
 
-// TFT ST7735S SPI (HSPI: SCLK=14, MOSI=13)
+// --- Pin Layar TFT (HSPI) ---
 #define TFT_SCLK        14
 #define TFT_MOSI        13
 #define TFT_RST         17
 #define TFT_DC          16
 #define TFT_CS           5
 
-// Rotary Encoder
-#define ROTARY_CLK_PIN  25
-#define ROTARY_DT_PIN   26
-#define ROTARY_SW_PIN   27
+// --- Pin Rotary Encoder ---
+#define ROTARY_CLK_PIN  25  // Putaran Kanan/Kiri
+#define ROTARY_DT_PIN   26  // Putaran Kanan/Kiri
+#define ROTARY_SW_PIN   27  // Tombol Tekan
 
-// ─── Encoder Config ───────────────────────────────────────────────
-#define ENC_STEPS_PER_DETENT 2      // KY-040 umum = 4. Jika 1 klik loncat 2 menu → 2 atau 1
-#define ENC_REVERSE          false  // true bila arah putar terbalik
-#define BTN_DEBOUNCE_MS      30
+// --- Konfigurasi Encoder ---
+#define ENC_STEPS_PER_DETENT 2     // Pulsa per satu klik fisik
+#define ENC_REVERSE          false // Set true jika arah putaran terbalik
+#define BTN_DEBOUNCE_MS      30    // Waktu stabil tombol (milidetik)
 
-// ─── TFT Layout (Portrait: 128×160) ───────────────────────────────
-//
-//  y=  0 ┌────────────────────────┐
-//        │  INKUBATOR   WIFI:OK   │  Topbar   h=14
-//  y= 14 ├────────────────────────┤
-//        │  SUHU                   │
-//        │          37.2 °C        │  Sensor Suhu  h=40
-//  y= 54 ╞════════════════════════╡  Divider
-//  y= 56 ├────────────────────────┤
-//        │  LEMBABAN              │
-//        │            65.1 %      │  Sensor Kelemb h=40
-//  y= 96 ╞════════════════════════╡  Divider
-//  y= 98 ├────────────────────────┤
-//        │  > SET SUHU    37.0°C  │
-//        │    SET LEMBAB  60%     │  Menu     h=50
-//        │    FAN SPEED   100%    │
-//        │    SERVO       SWING   │
-//  y=148 ├────────────────────────┤
-//        │  Putar=pilih Tekan=atur│  Hint     h=12
-//  y=160 └────────────────────────┘
-//
+// --- Peta Layar (128x160) & Tata Letak Baris ---
 #define TFT_W           128
 #define TFT_H           160
 #define ROW_TOPBAR        0
@@ -73,7 +56,7 @@
 #define ROW_MENU         98
 #define ROW_HINT        148
 
-// ── Color palette ───────────────────────────────────────────────
+// --- Palet Warna (RGB565) ---
 #define C_BG            ST77XX_BLACK
 #define C_DIV_HORIZ     0x4208
 #define C_DIV_VERT      0x4208
@@ -103,12 +86,12 @@
 #define C_HINT          0x5AEB
 #define C_HINT_BG       0x0008
 
-// ─── PID Config ───────────────────────────────────────────────────
+// --- Konstanta PID Pemanas ---
 #define KP 15.0
 #define KI  0.5
 #define KD 20.0
 
-// ─── Servo Config ─────────────────────────────────────────────────
+// --- Batasan Fisik & Mode Servo ---
 #define SERVO_MIN_ANGLE   35.0
 #define SERVO_MAX_ANGLE  145.0
 #define SERVO_MIN_DUTY   1638
@@ -116,13 +99,20 @@
 #define SERVO_MODE_JADWAL  0
 #define SERVO_MODE_SWING   1
 
+
+// ==============================================================================
+// 2. VARIABEL GLOBAL & OBJEK STATUS
+// ==============================================================================
+
+// --- Target & Status Sensor (NAN = Belum ada data valid) ---
 double target_temp      = 37.0;
 double target_hum       = 60.0;
-int    target_fan_speed = 100;     // 0–100 %
-double current_temp     = NAN;     // NAN = belum terbaca, UI tampil "--.-"
+int    target_fan_speed = 100;
+double current_temp     = NAN;
 double current_hum      = NAN;
 double heater_pwm_value = 0.0;
 
+// --- Status Servo ---
 int   servo_mode            = SERVO_MODE_JADWAL;
 int   servo_interval_hours  = 3;
 bool  servo_direction_cw    = true;
@@ -131,33 +121,34 @@ float target_servo_pos      = 0.0;
 unsigned long last_servo_mode_change = 0;
 unsigned long last_servo_update_time = 0;
 
-// ─── Encoder state (ISR) ──────────────────────────────────────────
+// --- Status Encoder (dari ISR) ---
 volatile int8_t  encState = 0;
 volatile int32_t encAccum = 0;
 portMUX_TYPE     encMux   = portMUX_INITIALIZER_UNLOCKED;
 
-// ─── Timing ───────────────────────────────────────────────────────
+// --- Jadwal Task (Waktu dalam ms) ---
 unsigned long lastSensorRead            = 0;
 unsigned long lastSensorRetry           = 0;
 unsigned long lastMqttReconnectAttempt  = 0;
 unsigned long lastDisplayUpdate         = 0;
 bool          displayDirty              = true;
+
 #define       DISPLAY_COOLDOWN_MS       10
 #define       SENSOR_READ_MS            2000
 #define       SENSOR_RETRY_MS           5000
 #define       MQTT_RECONNECT_MS         10000
 
-// ─── Sensor state (non-blocking) ──────────────────────────────────
-bool sensorOK        = false;
+// --- Status Kesehatan Sensor ---
+bool sensorOK        = false; // Failsafe jika lepas/gagal baca
 uint8_t sensorFails  = 0;
 
-// ─── Display Cache (anti-flicker) ─────────────────────────────────
+// --- Cache Layar (Mencegah Flicker / Redraw Berlebih) ---
 struct Cache {
   float  temp     = -999;
   float  hum      = -999;
   float  setTemp  = -999;
   float  setHum   = -999;
-  int    wifiSt   = -1;   // 0=DC 1=OK 2=AP
+  int    wifiSt   = -1;   // 0: Terputus, 1: Tersambung, 2: Portal Aktif
   int    menuState  = -1;
   int    subIdx     = -1;
   int    lastNavSel = -1;
@@ -165,7 +156,7 @@ struct Cache {
   char   editStr[16] = {};
 } cache;
 
-// ─── Objects ──────────────────────────────────────────────────────
+// --- Instansiasi Objek Utama ---
 SPIClass         tftSPI(HSPI);
 Adafruit_ST7735  tft = Adafruit_ST7735(&tftSPI, TFT_CS, TFT_DC, TFT_RST);
 Adafruit_SHT31   sht30;
@@ -175,7 +166,7 @@ Preferences      preferences;
 WiFiManager      wm;
 AutoPID          myPID(&current_temp, &target_temp, &heater_pwm_value, 0, 255, KP, KI, KD);
 
-// ─── Menu State ───────────────────────────────────────────────────
+// --- Mesin Status Menu ---
 enum MenuState {
   STATE_NAVIGATE,
   STATE_EDIT,
@@ -184,24 +175,32 @@ enum MenuState {
   STATE_CONFIRM
 };
 MenuState menuState      = STATE_NAVIGATE;
-int currentMenuIndex     = 0;   // 0=Temp 1=Hum 2=Fan 3=Servo
+int currentMenuIndex     = 0;   // 0: Suhu, 1: Lembab, 2: Kipas, 3: Servo
 int currentSubmenuIndex  = 0;
 const int maxMenuItems   = 4;
 
-// ═══════════════════════════════════════════════════════════════════
-//  SERVO
-// ═══════════════════════════════════════════════════════════════════
 
+// ==============================================================================
+// 3. FUNGSI KONTROL SERVO
+// ==============================================================================
+
+/**
+ * @brief Mengubah sudut perintah menjadi duty cycle PWM berdasarkan kalibrasi fisik.
+ */
 uint32_t angleToDuty(float angle) {
   float phy = SERVO_MIN_ANGLE + (angle / 180.0f) * (SERVO_MAX_ANGLE - SERVO_MIN_ANGLE);
   return SERVO_MIN_DUTY + (uint32_t)((phy / 180.0f) * (SERVO_MAX_DUTY - SERVO_MIN_DUTY));
 }
 
+/**
+ * @brief Memulihkan konfigurasi servo dari memori NVS dan memosisikan ke titik awal.
+ */
 void setupServo() {
   ledcAttach(SERVO_PIN, 50, 16);
   servo_mode           = preferences.getInt("s_mode", SERVO_MODE_JADWAL);
   servo_interval_hours = preferences.getInt("s_int",  3);
   servo_direction_cw   = preferences.getBool("s_dir", true);
+  
   if (servo_mode == SERVO_MODE_JADWAL) {
     current_servo_pos = servo_direction_cw ? 180.0f : 0.0f;
     target_servo_pos  = current_servo_pos;
@@ -209,12 +208,18 @@ void setupServo() {
     current_servo_pos = 0.0f;
     target_servo_pos  = 180.0f;
   }
+  
   ledcWrite(SERVO_PIN, angleToDuty(current_servo_pos));
   last_servo_mode_change = millis();
 }
 
+/**
+ * @brief Memperbarui gerakan servo secara non-blocking setiap loop. 
+ * Mendukung mode ayun terus (swing) dan pembalikan terjadwal (jadwal).
+ */
 void updateServo() {
   unsigned long now = millis();
+  
   if (servo_mode == SERVO_MODE_SWING) {
     if (now - last_servo_update_time >= 30) {
       last_servo_update_time = now;
@@ -240,13 +245,13 @@ void updateServo() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  DISPLAY — Partial-update system (zero fillScreen in loop)
-// ═══════════════════════════════════════════════════════════════════
 
-void drawZoneText(int x, int y, int zoneW, int zoneH,
-                  const char* txt, uint16_t color, uint8_t sz,
-                  uint16_t bg = C_BG) {
+// ==============================================================================
+// 4. FUNGSI TAMPILAN (TFT DISPLAY)
+// ==============================================================================
+
+/** @brief Menulis teks rata kiri dan menghapus latar zonanya */
+void drawZoneText(int x, int y, int zoneW, int zoneH, const char* txt, uint16_t color, uint8_t sz, uint16_t bg = C_BG) {
   tft.fillRect(x, y, zoneW, zoneH, bg);
   tft.setTextSize(sz);
   tft.setTextColor(color);
@@ -254,9 +259,8 @@ void drawZoneText(int x, int y, int zoneW, int zoneH,
   tft.print(txt);
 }
 
-void drawZoneTextRight(int x, int y, int zoneW, int zoneH,
-                       const char* txt, uint16_t color, uint8_t sz,
-                       uint16_t bg = C_BG) {
+/** @brief Menulis teks rata kanan dan menghapus latar zonanya */
+void drawZoneTextRight(int x, int y, int zoneW, int zoneH, const char* txt, uint16_t color, uint8_t sz, uint16_t bg = C_BG) {
   tft.fillRect(x, y, zoneW, zoneH, bg);
   tft.setTextSize(sz);
   tft.setTextColor(color);
@@ -265,10 +269,9 @@ void drawZoneTextRight(int x, int y, int zoneW, int zoneH,
   tft.print(txt);
 }
 
-// ── Chrome: drawn ONCE at boot ─────────────────────────────────
+/** @brief Menggambar bingkai UI statis sekali saat booting */
 void drawChrome() {
   tft.fillScreen(C_BG);
-
   tft.fillRect(0, 12, TFT_W, 2, C_DIV_TOPBAR);
   tft.fillRect(0, ROW_SENSOR_KELEMB - 2, TFT_W, 2, C_DIV_HORIZ);
   tft.fillRect(0, ROW_MENU - 2, TFT_W, 2, C_DIV_MENU);
@@ -282,12 +285,13 @@ void drawChrome() {
   tft.print("LEMBABAN");
 }
 
-// ── Topbar ────────────────────────────────────────────────────
+/** @brief Memperbarui bilah status atas (hanya saat status WiFi berubah) */
 void updateTopbar() {
   int st = 0;
   if      (WiFi.status() == WL_CONNECTED)   st = 1;
   else if (wm.getConfigPortalActive())      st = 2;
   if (st == cache.wifiSt) return;
+  
   cache.wifiSt = st;
   displayDirty = true;
 
@@ -304,11 +308,11 @@ void updateTopbar() {
   drawZoneTextRight(TFT_W - 52, 3, 50, 9, wl, wc, 1);
 }
 
-// ── Sensor Zone ───────────────────────────────────────────────
+/** @brief Menggambar pembaruan sensor, me-redraw hanya bila melewati batas deadband */
 void updateSensorZone() {
   bool changed = false;
 
-  // ── Suhu ──
+  // Render Suhu
   {
     bool invalid = isnan(current_temp);
     float cmp = invalid ? -9999.0f : (float)current_temp;
@@ -317,12 +321,13 @@ void updateSensorZone() {
       char buf[12];
       if (invalid) snprintf(buf, sizeof(buf), "--.-");
       else         snprintf(buf, sizeof(buf), "%.1f", current_temp);
+      
       tft.fillRect(2, ROW_SENSOR_SUHU + 10, 124, 24, C_BG);
       tft.setTextSize(3); tft.setTextColor(0xFD20);
       int valW = strlen(buf) * 18;
       int unitW = 8;
-      int totalW = valW + unitW;
-      int startX = (TFT_W - totalW) / 2;
+      int startX = (TFT_W - (valW + unitW)) / 2;
+      
       tft.setCursor(startX, ROW_SENSOR_SUHU + 12);
       tft.print(buf);
       tft.setTextSize(1); tft.setTextColor(0xFE60);
@@ -332,7 +337,7 @@ void updateSensorZone() {
     }
   }
 
-  // ── Kelembapan ──
+  // Render Kelembapan
   {
     bool invalid = isnan(current_hum);
     float cmp = invalid ? -9999.0f : (float)current_hum;
@@ -341,12 +346,13 @@ void updateSensorZone() {
       char buf[12];
       if (invalid) snprintf(buf, sizeof(buf), "--.-");
       else         snprintf(buf, sizeof(buf), "%.1f", current_hum);
+      
       tft.fillRect(2, ROW_SENSOR_KELEMB + 10, 124, 24, C_BG);
       tft.setTextSize(3); tft.setTextColor(0x041F);
       int valW = strlen(buf) * 18;
       int unitW = 6;
-      int totalW = valW + unitW;
-      int startX = (TFT_W - totalW) / 2;
+      int startX = (TFT_W - (valW + unitW)) / 2;
+      
       tft.setCursor(startX, ROW_SENSOR_KELEMB + 12);
       tft.print(buf);
       tft.setTextSize(1); tft.setTextColor(0x87FF);
@@ -356,6 +362,7 @@ void updateSensorZone() {
     }
   }
 
+  // Memulihkan grid pembatas jika ada zona yang tertimpa
   if (changed) {
     tft.fillRect(0, 12, TFT_W, 2, C_DIV_TOPBAR);
     tft.fillRect(0, ROW_SENSOR_KELEMB - 2, TFT_W, 2, C_DIV_HORIZ);
@@ -364,9 +371,6 @@ void updateSensorZone() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  Anti-Flicker Helpers — row-level drawing
-// ═══════════════════════════════════════════════════════════════════
 static const char* const NAV_LABELS[] = {"SET SUHU", "SET LEMBAB", "FAN SPEED", "SERVO"};
 static const char* const SERVO_OPTS[] = {"JADWAL", "SWING", "KEMBALI"};
 
@@ -383,9 +387,11 @@ void drawNavRow(int idx, bool sel) {
   tft.setTextSize(1);
   tft.setCursor(4, y);
   tft.setTextColor(sel ? C_SELECTED : C_NAV_LABEL);
+  
   char row[32];
   snprintf(row, sizeof(row), "%s %s", sel ? ">" : " ", NAV_LABELS[idx]);
   tft.print(row);
+  
   char val[16];
   formatMenuVal(idx, val, sizeof(val));
   int tw = strlen(val) * 6;
@@ -402,9 +408,7 @@ void drawServoOptRow(int idx, bool sel) {
   tft.setTextColor(sel ? C_SELECTED : C_NAV_LABEL);
   tft.print(sel ? "> " : "  ");
   tft.print(SERVO_OPTS[idx]);
-  if (!sel) {
-    tft.fillRect(50, y, TFT_W - 50, 10, C_BG);
-  }
+  if (!sel) tft.fillRect(50, y, TFT_W - 50, 10, C_BG);
 }
 
 void drawHint(const char* txt) {
@@ -419,8 +423,9 @@ void drawEditScreen(const char* label, const char* valStr, uint16_t valColor, co
   tft.setTextSize(1); tft.setTextColor(C_UNIT);
   tft.setCursor(4, ROW_MENU + 2);
   tft.print(label);
+  
   int tw = strlen(valStr) * 18;
-  int xc = (TFT_W - tw) / 2; if (xc < 2) xc = 2;
+  int xc = max((TFT_W - tw) / 2, 2);
   tft.setTextSize(3); tft.setTextColor(valColor);
   tft.setCursor(xc, ROW_MENU + 20);
   tft.print(valStr);
@@ -430,13 +435,13 @@ void drawEditScreen(const char* label, const char* valStr, uint16_t valColor, co
 void drawEditValueOnly(const char* valStr, uint16_t valColor) {
   tft.fillRect(0, ROW_MENU + 14, TFT_W, 34, C_BG);
   int tw = strlen(valStr) * 18;
-  int xc = (TFT_W - tw) / 2; if (xc < 2) xc = 2;
+  int xc = max((TFT_W - tw) / 2, 2);
   tft.setTextSize(3); tft.setTextColor(valColor);
   tft.setCursor(xc, ROW_MENU + 20);
   tft.print(valStr);
 }
 
-// ── Menu zone with incremental row-level updates ───────────────
+/** @brief Dispatcher rendering menu berdasarkan status mesin saat ini. */
 void drawMenuZone() {
   bool stateChanged = ((int)menuState != cache.menuState);
   if (stateChanged) {
@@ -503,6 +508,7 @@ void drawMenuZone() {
     if      (currentMenuIndex == 0) snprintf(vb, 16, "%.1f\xF7""C", target_temp);
     else if (currentMenuIndex == 1) snprintf(vb, 16, "%d%%", (int)target_hum);
     else                            snprintf(vb, 16, "%d%%", target_fan_speed);
+    
     if (stateChanged) {
       strcpy(cache.editStr, vb);
       drawEditScreen(labels[currentMenuIndex], vb, C_EDIT_VAL, "Putar=ubah   Tekan=konfirm");
@@ -517,6 +523,7 @@ void drawMenuZone() {
     else if (currentMenuIndex == 1) snprintf(vb, 16, "%d%%", (int)target_hum);
     else if (currentMenuIndex == 2) snprintf(vb, 16, "%d%%", target_fan_speed);
     else snprintf(vb, 16, "%s", servo_mode == SERVO_MODE_SWING ? "SWING" : "JADWAL");
+    
     if (stateChanged) {
       strcpy(cache.editStr, vb);
       drawEditScreen("SIMPAN PERUBAHAN?", vb, C_CONFIRM_VAL, "Tekan=simpan  Putar=batal");
@@ -529,7 +536,6 @@ void drawMenuZone() {
   cache.menuState = (int)menuState;
 }
 
-// ── Master display update ──────────────────────────────────────
 void updateDisplay() {
   updateTopbar();
   drawMenuZone();
@@ -539,17 +545,14 @@ void updateSensorDisplay() {
   updateSensorZone();
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  ROTARY ENCODER — quadrature state-table (Gray code)
-//  Transisi ilegal (akibat bouncing) otomatis bernilai 0,
-//  sehingga tidak butuh debounce berbasis waktu.
-// ═══════════════════════════════════════════════════════════════════
 
+// ==============================================================================
+// 5. FUNGSI ENCODER & MENU LOGIC
+// ==============================================================================
+
+/** @brief Interupsi membaca status quadrature encoder tanpa memerlukan debounce delay. */
 void IRAM_ATTR isr_encoder() {
-  static const int8_t T[16] = { 0,-1, 1, 0,
-                                1, 0, 0,-1,
-                               -1, 0, 0, 1,
-                                0, 1,-1, 0 };
+  static const int8_t T[16] = { 0,-1, 1, 0, 1, 0, 0,-1, -1, 0, 0, 1, 0, 1,-1, 0 };
   portENTER_CRITICAL_ISR(&encMux);
   encState = ((encState << 2) |
               (digitalRead(ROTARY_CLK_PIN) << 1) |
@@ -567,20 +570,21 @@ void setupEncoder() {
   attachInterrupt(digitalPinToInterrupt(ROTARY_DT_PIN),  isr_encoder, CHANGE);
 }
 
-// Jumlah "klik" (detent) sejak panggilan terakhir, bertanda +/-
+/** @brief Membaca jumlah putaran encoder sejak panggilan terakhir */
 int readEncoderSteps() {
   portENTER_CRITICAL(&encMux);
   int steps = encAccum / ENC_STEPS_PER_DETENT;
-  encAccum -= steps * ENC_STEPS_PER_DETENT;   // sisa transisi dipertahankan
+  encAccum -= steps * ENC_STEPS_PER_DETENT;
   portEXIT_CRITICAL(&encMux);
   return ENC_REVERSE ? -steps : steps;
 }
 
-// Tombol: polling + debounce, tanpa lockout panjang
+/** @brief Membaca tombol tekan dengan debounce berbasis waktu */
 bool readButton() {
   static bool lastRaw = HIGH, stable = HIGH;
   static unsigned long tChange = 0;
   bool raw = digitalRead(ROTARY_SW_PIN);
+  
   if (raw != lastRaw) { lastRaw = raw; tChange = millis(); }
   if (millis() - tChange >= BTN_DEBOUNCE_MS && raw != stable) {
     stable = raw;
@@ -588,10 +592,6 @@ bool readButton() {
   }
   return false;
 }
-
-// ═══════════════════════════════════════════════════════════════════
-//  MENU LOGIC
-// ═══════════════════════════════════════════════════════════════════
 
 void saveAll() {
   preferences.putDouble("t_temp", target_temp);
@@ -602,8 +602,8 @@ void saveAll() {
   preferences.putBool("s_dir",    servo_direction_cw);
 }
 
+/** @brief Mengontrol navigasi dan manipulasi variabel berdasarkan input encoder/tombol */
 void handleMenu() {
-  // ── Button ──────────────────────────────────────────────────
   if (readButton()) {
     displayDirty = true;
     if (menuState == STATE_NAVIGATE) {
@@ -616,13 +616,13 @@ void handleMenu() {
     } else if (menuState == STATE_EDIT) {
       menuState = STATE_CONFIRM;
     } else if (menuState == STATE_SERVO_SUBMENU) {
-      if (currentSubmenuIndex == 0) {       // JADWAL
+      if (currentSubmenuIndex == 0) {
         servo_mode = SERVO_MODE_JADWAL;
         menuState  = STATE_SERVO_EDIT_JADWAL;
-      } else if (currentSubmenuIndex == 1) { // SWING
+      } else if (currentSubmenuIndex == 1) {
         servo_mode = SERVO_MODE_SWING;
         menuState  = STATE_CONFIRM;
-      } else {                              // KEMBALI
+      } else {
         menuState = STATE_NAVIGATE;
         currentMenuIndex = 3;
       }
@@ -638,20 +638,15 @@ void handleMenu() {
     }
   }
 
-  // ── Encoder rotation: semua step diproses, tanpa threshold ──
   int steps = readEncoderSteps();
   if (steps != 0) {
     displayDirty = true;
-
     if (menuState == STATE_NAVIGATE) {
       currentMenuIndex = ((currentMenuIndex + steps) % maxMenuItems + maxMenuItems) % maxMenuItems;
-
     } else if (menuState == STATE_SERVO_SUBMENU) {
       currentSubmenuIndex = ((currentSubmenuIndex + steps) % 3 + 3) % 3;
-
     } else if (menuState == STATE_SERVO_EDIT_JADWAL) {
       servo_interval_hours = constrain(servo_interval_hours + steps, 1, 24);
-
     } else if (menuState == STATE_EDIT) {
       if (currentMenuIndex == 0)
         target_temp = constrain(round((target_temp + steps * 0.1) * 10.0) / 10.0, 20.0, 50.0);
@@ -660,9 +655,8 @@ void handleMenu() {
       else if (currentMenuIndex == 2)
         target_fan_speed = constrain(target_fan_speed + steps * 5, 0, 100);
       cache.setTemp = -999; cache.setHum = -999;
-
     } else if (menuState == STATE_CONFIRM) {
-      // Rotasi apa pun = kembali ke EDIT
+      // Pembatalan (Cancel) dari layar confirm
       if (currentMenuIndex == 3)
         menuState = (servo_mode == SERVO_MODE_SWING) ? STATE_SERVO_SUBMENU : STATE_SERVO_EDIT_JADWAL;
       else
@@ -671,10 +665,14 @@ void handleMenu() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  SENSOR & CONTROL
-// ═══════════════════════════════════════════════════════════════════
 
+// ==============================================================================
+// 6. FUNGSI SENSOR & KONTROL PID
+// ==============================================================================
+
+/** @brief Membaca SHT30 dan menjalankan kalkulasi aktuator/PID. 
+ * Kipas mengikuti pengaturan target walau sensor terputus. 
+ */
 void readSensorAndControl() {
   int fan_pwm = map(target_fan_speed, 0, 100, 0, 255);
   ledcWrite(FAN_PWM_PIN, fan_pwm);
@@ -694,6 +692,7 @@ void readSensorAndControl() {
 
   float t = sht30.readTemperature();
   float h = sht30.readHumidity();
+  
   if (isnan(t) || isnan(h)) {
     Serial.println("[SHT30] Read fail");
     if (++sensorFails >= 3) {
@@ -706,12 +705,17 @@ void readSensorAndControl() {
     }
     return;
   }
+  
   sensorFails = 0;
   current_temp = t;
   current_hum  = h;
+  
   myPID.run();
   int pwm = (int)heater_pwm_value;
+  
+  // Kickstart minimal untuk pemanas jika di bawah suhu target
   if (current_temp < target_temp && pwm < 15) pwm = 120;
+  
   ledcWrite(HEATER_PWM_PIN, pwm);
   if      (current_hum <= target_hum - 1.0) digitalWrite(RELAY_HUM_PIN, HIGH);
   else if (current_hum >= target_hum)        digitalWrite(RELAY_HUM_PIN, LOW);
@@ -720,9 +724,10 @@ void readSensorAndControl() {
                 current_temp, current_hum, pwm, target_fan_speed);
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  WIFI
-// ═══════════════════════════════════════════════════════════════════
+
+// ==============================================================================
+// 7. FUNGSI JARINGAN (WIFI & MQTT) - BERJALAN DI CORE 0
+// ==============================================================================
 
 void setupWifi() {
   wm.setConfigPortalBlocking(false);
@@ -730,10 +735,9 @@ void setupWifi() {
   wm.setConnectRetries(1);
   wm.setConfigPortalTimeout(180);
   wm.setWiFiAutoReconnect(true);
-  if (wm.autoConnect("ESP32_Incubator_AP"))
-    Serial.println("[WiFi] Connected at boot");
-  else
-    Serial.println("[WiFi] lanjut boot tanpa WiFi (portal non-blocking)");
+  
+  if (wm.autoConnect("ESP32_Incubator_AP")) Serial.println("[WiFi] Connected at boot");
+  else Serial.println("[WiFi] lanjut boot tanpa WiFi (portal non-blocking)");
 }
 
 void handleWifiCheck() {
@@ -743,10 +747,7 @@ void handleWifiCheck() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  MQTT
-// ═══════════════════════════════════════════════════════════════════
-
+/** @brief Menangani perintah MQTT masuk (JSON/Text) */
 void callback(char* topic, byte* payload, unsigned int length) {
   String msg = "";
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
@@ -762,6 +763,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     client.publish(mqtt_topic_data, buf);
     return;
   }
+  
   StaticJsonDocument<200> doc;
   if (!deserializeJson(doc, payload, length)) {
     if (doc.containsKey("target_temp"))  { target_temp      = doc["target_temp"]; cache.setTemp = -999; }
@@ -775,7 +777,9 @@ void reconnect() {
   unsigned long now = millis();
   if (now - lastMqttReconnectAttempt < MQTT_RECONNECT_MS) return;
   lastMqttReconnectAttempt = now;
+  
   if (WiFi.status() != WL_CONNECTED) return;
+  
   Serial.print("[MQTT] Connecting...");
   String cid = "ESP32-Inc-" + String(random(0xffff), HEX);
   if (client.connect(cid.c_str(), mqtt_user, mqtt_pass)) {
@@ -787,7 +791,7 @@ void reconnect() {
 }
 
 void publishSensorData() {
-  if (!sensorOK) return;   // jangan kirim NAN
+  if (!sensorOK) return;
   if (WiFi.status() == WL_CONNECTED && client.connected() && !isnan(current_temp)) {
     StaticJsonDocument<200> doc;
     doc["temperature"]  = current_temp;
@@ -800,10 +804,7 @@ void publishSensorData() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  NETWORK TASK (core 0) — WiFi/MQTT/TLS tidak boleh menahan UI
-// ═══════════════════════════════════════════════════════════════════
-
+/** @brief Task FreeRTOS untuk menghandle network secara terpisah */
 void networkTask(void* pv) {
   setupWifi();
 
@@ -816,45 +817,44 @@ void networkTask(void* pv) {
 
   unsigned long now = millis();
   unsigned long lastWifi = now, lastPub = now;
-  lastMqttReconnectAttempt = now - MQTT_RECONNECT_MS + 3000;  // coba MQTT 3 dtk lagi
+  lastMqttReconnectAttempt = now - MQTT_RECONNECT_MS + 3000;
 
   for (;;) {
     wm.process();
     now = millis();
 
     if (now - lastWifi >= 5000) { lastWifi = now; handleWifiCheck(); }
-
     if (WiFi.status() == WL_CONNECTED) {
       if (!client.connected()) reconnect();
       else                     client.loop();
     }
-
     if (now - lastPub >= 5000) { lastPub = now; publishSensorData(); }
 
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  SETUP & LOOP
-// ═══════════════════════════════════════════════════════════════════
+
+// ==============================================================================
+// 8. SETUP & LOOP UTAMA
+// ==============================================================================
 
 void setup() {
   Serial.begin(115200);
   Serial.println("[BOOT] Starting...");
 
-  // ── 1. NVS dulu → menu langsung punya nilai walau sensor/WiFi mati ──
+  // Load memori NVS di awal untuk UI Placeholder
   preferences.begin("incubator", false);
   target_temp      = preferences.getDouble("t_temp", 37.0);
   target_hum       = preferences.getDouble("t_hum",  60.0);
   target_fan_speed = preferences.getInt("t_fan",     100);
   if (target_fan_speed > 100) target_fan_speed = 100;
 
-  // TFT Init (hardware SPI di HSPI: SCLK=14, MOSI=13)
+  // Inisialisasi Layar TFT
   tftSPI.begin(TFT_SCLK, -1, TFT_MOSI, -1);
   tft.initR(INITR_BLACKTAB);
-  tft.setSPISpeed(27000000);      // turunkan ke 20000000 bila layar glitch
-  tft.setRotation(0);             // Portrait
+  tft.setSPISpeed(27000000);
+  tft.setRotation(0);
   tft.setTextWrap(false);
   tft.fillScreen(C_BG);
   tft.setTextSize(1); tft.setTextColor(ST77XX_WHITE);
@@ -862,13 +862,10 @@ void setup() {
   tft.print("Initializing...");
   Serial.println("[TFT] OK");
 
-  // Static chrome layout
   drawChrome();
-
-  // Encoder
   setupEncoder();
 
-  // PWM & Relay (failsafe: heater OFF, fan ikut setting)
+  // Failsafe & Konfigurasi Pin Awal
   pinMode(RELAY_HUM_PIN, OUTPUT);
   digitalWrite(RELAY_HUM_PIN, LOW);
   ledcAttach(FAN_PWM_PIN,    5000, 8);
@@ -876,17 +873,14 @@ void setup() {
   ledcWrite(HEATER_PWM_PIN, 0);
   ledcWrite(FAN_PWM_PIN, map(target_fan_speed, 0, 100, 0, 255));
 
-  // PID
   myPID.setBangBang(0.5);
 
-  // ── 2. UI langsung hidup, tampil "--.-" dulu tanpa nunggu sensor ──
+  // Update layar pertama kali tanpa menunggu data sensor
   updateSensorDisplay();
   updateDisplay();
-
-  // Servo (baca NVS di dalam)
   setupServo();
 
-  // ── 3. Sensor: coba sekali saja, gagal → lanjut boot, retry di loop ──
+  // Tes Sensor Awal
   if (!sht30.begin(0x44)) {
     Serial.println("[SHT30] NOT FOUND at boot, lanjut (retry di loop)");
     sensorOK = false;
@@ -896,33 +890,28 @@ void setup() {
     sensorOK = true;
   }
 
-  lastSensorRead = millis() - SENSOR_READ_MS + 500;  // baca pertama 0.5 dtk lagi
+  lastSensorRead = millis() - SENSOR_READ_MS + 500;
 
-  // ── 4. WiFi + MQTT di task terpisah (core 0), loop() tetap di core 1 ──
+  // Mengisolasi Network ke Core 0 (Loop tetap di Core 1)
   xTaskCreatePinnedToCore(networkTask, "net", 10240, NULL, 1, NULL, 0);
 
   Serial.println("[BOOT] Done. UI siap, sensor/WiFi/MQTT jalan background.");
 }
 
 void loop() {
-  // Encoder & menu logic (prioritas utama, dipanggil tiap iterasi)
   handleMenu();
-
-  // Sensor display (hanya redraw saat nilai berubah)
   updateSensorDisplay();
 
-  // Display partial update
   unsigned long now = millis();
+  
   if (displayDirty && (now - lastDisplayUpdate >= DISPLAY_COOLDOWN_MS)) {
     updateDisplay();
     lastDisplayUpdate = now;
     displayDirty = false;
   }
 
-  // Servo movement (non-blocking, tiap 30ms internal)
   updateServo();
 
-  // Sensor & control setiap 2 dtk (return cepat bila sensor mati)
   if (now - lastSensorRead >= SENSOR_READ_MS) {
     lastSensorRead = now;
     readSensorAndControl();
