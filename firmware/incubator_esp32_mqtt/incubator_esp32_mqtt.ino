@@ -1,12 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════
 //  Incubator ESP32 — Single File Firmware
-//  Display : ST7735S 1.8" TFT  Portrait 128×160
+//  Display : ST7735S 1.8" TFT  Portrait 128×160 (Hardware SPI / HSPI)
 //  Sensor  : SHT30
 //  Control : PID Heater  |  Relay Humidifier  |  Fan PWM  |  Servo
-//  Network : WiFiManager + MQTT (TLS)
+//  Network : WiFiManager + MQTT (TLS)  → jalan di task core 0
+//  Encoder : Quadrature state-table (akurat, tanpa delay)
 // ═══════════════════════════════════════════════════════════════════
 
 // ─── Libraries ────────────────────────────────────────────────────
+#include <SPI.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <WiFiManager.h>
@@ -23,11 +25,11 @@
 #define HEATER_PWM_PIN  18
 #define FAN_PWM_PIN     19
 #define RELAY_HUM_PIN   12
-#define SERVO_PIN        4   // Dipindah dari 13 ke 4 karena pin 13 dipakai TFT_MOSI
+#define SERVO_PIN        4
 
-// TFT ST7735S SPI
+// TFT ST7735S SPI (HSPI: SCLK=14, MOSI=13)
 #define TFT_SCLK        14
-#define TFT_MOSI        13   // NOTE: shared pin with SERVO_PIN only if SPI HW used
+#define TFT_MOSI        13
 #define TFT_RST         17
 #define TFT_DC          16
 #define TFT_CS           5
@@ -37,18 +39,21 @@
 #define ROTARY_DT_PIN   26
 #define ROTARY_SW_PIN   27
 
+// ─── Encoder Config ───────────────────────────────────────────────
+#define ENC_STEPS_PER_DETENT 2      // KY-040 umum = 4. Jika 1 klik loncat 2 menu → 2 atau 1
+#define ENC_REVERSE          false  // true bila arah putar terbalik
+#define BTN_DEBOUNCE_MS      30
+
 // ─── TFT Layout (Portrait: 128×160) ───────────────────────────────
 //
 //  y=  0 ┌────────────────────────┐
 //        │  INKUBATOR   WIFI:OK   │  Topbar   h=14
 //  y= 14 ├────────────────────────┤
 //        │  SUHU                   │
-//        │                        │
 //        │          37.2 °C        │  Sensor Suhu  h=40
 //  y= 54 ╞════════════════════════╡  Divider
 //  y= 56 ├────────────────────────┤
 //        │  LEMBABAN              │
-//        │                        │
 //        │            65.1 %      │  Sensor Kelemb h=40
 //  y= 96 ╞════════════════════════╡  Divider
 //  y= 98 ├────────────────────────┤
@@ -70,38 +75,33 @@
 
 // ── Color palette ───────────────────────────────────────────────
 #define C_BG            ST77XX_BLACK
-// Dividers — plain dim white
-#define C_DIV_HORIZ     0x4208   // dim white (kusam)
+#define C_DIV_HORIZ     0x4208
 #define C_DIV_VERT      0x4208
 #define C_DIV_TOPBAR    0x4208
 #define C_DIV_MENU      0x4208
 
-// Sensor zone
-#define C_LABEL         0x867D   // soft lavender-grey
-#define C_LABEL_SUHU    0xFEA0   // warm orange for SUHU label
-#define C_LABEL_KELEMB  0x87FC   // cool teal for KELEMBAPAN label
+#define C_LABEL         0x867D
+#define C_LABEL_SUHU    0xFEA0
+#define C_LABEL_KELEMB  0x87FC
 #define C_VALUE         ST77XX_WHITE
 #define C_UNIT          ST77XX_CYAN
 #define C_SET           ST77XX_YELLOW
 
-// Topbar
 #define C_TITLE         ST77XX_WHITE
-#define C_TITLE_BG      0x1082   // subtle dark bar behind title
-#define C_WIFI_OK       0x07E0   // bright green
-#define C_WIFI_AP       0xFBE0   // amber/yellow
-#define C_WIFI_DC       0xF800   // red
+#define C_TITLE_BG      0x1082
+#define C_WIFI_OK       0x07E0
+#define C_WIFI_AP       0xFBE0
+#define C_WIFI_DC       0xF800
 
-// Menu zone
 #define C_SELECTED      ST77XX_YELLOW
-#define C_SEL_BG        0x1082   // dark highlight behind selected row
-#define C_DIMMED        0x528A   // muted grey for unselected values
-#define C_NAV_LABEL     0xC618   // light silver for nav labels
-#define C_EDIT_VAL      0x07FF   // bright cyan for edit value
-#define C_CONFIRM_VAL   0xFD20   // orange for confirm
+#define C_SEL_BG        0x1082
+#define C_DIMMED        0x528A
+#define C_NAV_LABEL     0xC618
+#define C_EDIT_VAL      0x07FF
+#define C_CONFIRM_VAL   0xFD20
 
-// Hint bar
-#define C_HINT          0x5AEB   // cool blue-grey
-#define C_HINT_BG       0x0008   // very subtle dark blue tint
+#define C_HINT          0x5AEB
+#define C_HINT_BG       0x0008
 
 // ─── PID Config ───────────────────────────────────────────────────
 #define KP 15.0
@@ -131,47 +131,43 @@ float target_servo_pos      = 0.0;
 unsigned long last_servo_mode_change = 0;
 unsigned long last_servo_update_time = 0;
 
-volatile int  encoderValue  = 0;
-volatile bool buttonPressed = false;
+// ─── Encoder state (ISR) ──────────────────────────────────────────
+volatile int8_t  encState = 0;
+volatile int32_t encAccum = 0;
+portMUX_TYPE     encMux   = portMUX_INITIALIZER_UNLOCKED;
 
 // ─── Timing ───────────────────────────────────────────────────────
 unsigned long lastSensorRead            = 0;
-unsigned long lastSensorRetry           = 0;   // retry begin() sensor tanpa blokir
-unsigned long lastMqttPublish           = 0;
-unsigned long lastWifiCheck             = 0;
+unsigned long lastSensorRetry           = 0;
 unsigned long lastMqttReconnectAttempt  = 0;
 unsigned long lastDisplayUpdate         = 0;
 bool          displayDirty              = true;
-#define       DISPLAY_COOLDOWN_MS       50
-#define       SENSOR_READ_MS            2000   // interval baca normal
-#define       SENSOR_RETRY_MS           5000   // interval coba begin() ulang
-#define       MQTT_RECONNECT_MS         10000  // TLS handshake lama → jangan sering
+#define       DISPLAY_COOLDOWN_MS       10
+#define       SENSOR_READ_MS            2000
+#define       SENSOR_RETRY_MS           5000
+#define       MQTT_RECONNECT_MS         10000
 
 // ─── Sensor state (non-blocking) ──────────────────────────────────
-// sensorOK=false → kontrol failsafe (heater OFF), tapi menu/display/
-// servo/fan tetap jalan tanpa menunggu sensor.
 bool sensorOK        = false;
 uint8_t sensorFails  = 0;
 
 // ─── Display Cache (anti-flicker) ─────────────────────────────────
-// Each cached var stores last-drawn value; zone only redraws on change
 struct Cache {
   float  temp     = -999;
   float  hum      = -999;
   float  setTemp  = -999;
   float  setHum   = -999;
   int    wifiSt   = -1;   // 0=DC 1=OK 2=AP
-  // menu cache
   int    menuState  = -1;
   int    subIdx     = -1;
-  // anti-flicker: row-level cache
-  int    lastNavSel = -1;     // last highlighted row in NAVIGATE (-1=none)
-  char   navVals[4][16] = {}; // per-row value strings for change detection
-  char   editStr[16] = {};    // value string for EDIT/CONFIRM modes
+  int    lastNavSel = -1;
+  char   navVals[4][16] = {};
+  char   editStr[16] = {};
 } cache;
 
 // ─── Objects ──────────────────────────────────────────────────────
-Adafruit_ST7735  tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
+SPIClass         tftSPI(HSPI);
+Adafruit_ST7735  tft = Adafruit_ST7735(&tftSPI, TFT_CS, TFT_DC, TFT_RST);
 Adafruit_SHT31   sht30;
 WiFiClientSecure espClient;
 PubSubClient     client(espClient);
@@ -191,7 +187,6 @@ MenuState menuState      = STATE_NAVIGATE;
 int currentMenuIndex     = 0;   // 0=Temp 1=Hum 2=Fan 3=Servo
 int currentSubmenuIndex  = 0;
 const int maxMenuItems   = 4;
-int lastEncoderValue     = 0;
 
 // ═══════════════════════════════════════════════════════════════════
 //  SERVO
@@ -249,7 +244,6 @@ void updateServo() {
 //  DISPLAY — Partial-update system (zero fillScreen in loop)
 // ═══════════════════════════════════════════════════════════════════
 
-// ── Helpers ──────────────────────────────────────────────────────
 void drawZoneText(int x, int y, int zoneW, int zoneH,
                   const char* txt, uint16_t color, uint8_t sz,
                   uint16_t bg = C_BG) {
@@ -275,12 +269,10 @@ void drawZoneTextRight(int x, int y, int zoneW, int zoneH,
 void drawChrome() {
   tft.fillScreen(C_BG);
 
-  // Dividers — dim white, 2px
   tft.fillRect(0, 12, TFT_W, 2, C_DIV_TOPBAR);
   tft.fillRect(0, ROW_SENSOR_KELEMB - 2, TFT_W, 2, C_DIV_HORIZ);
   tft.fillRect(0, ROW_MENU - 2, TFT_W, 2, C_DIV_MENU);
 
-  // Static sensor labels — pojok kiri
   tft.setTextSize(1);
   tft.setTextColor(C_LABEL_SUHU);
   tft.setCursor(4, ROW_SENSOR_SUHU + 2);
@@ -299,7 +291,6 @@ void updateTopbar() {
   cache.wifiSt = st;
   displayDirty = true;
 
-  // Subtle dark bar behind title
   tft.fillRect(0, ROW_TOPBAR, TFT_W, 13, C_TITLE_BG);
   tft.setTextSize(1);
   tft.setTextColor(C_TITLE);
@@ -314,11 +305,10 @@ void updateTopbar() {
 }
 
 // ── Sensor Zone ───────────────────────────────────────────────
-// Non-blocking: kalau sensor belum valid tampil "--.-", menu tetap jalan.
 void updateSensorZone() {
   bool changed = false;
 
-  // ── Suhu (top section) — warm orange tones ──
+  // ── Suhu ──
   {
     bool invalid = isnan(current_temp);
     float cmp = invalid ? -9999.0f : (float)current_temp;
@@ -327,22 +317,22 @@ void updateSensorZone() {
       char buf[12];
       if (invalid) snprintf(buf, sizeof(buf), "--.-");
       else         snprintf(buf, sizeof(buf), "%.1f", current_temp);
-    tft.fillRect(2, ROW_SENSOR_SUHU + 10, 124, 24, C_BG);
-    tft.setTextSize(3); tft.setTextColor(0xFD20);  // orange value
-    int valW = strlen(buf) * 18;
-    int unitW = 8;  // "°C" at size 1 ≈ 8px
-    int totalW = valW + unitW;
-    int startX = (TFT_W - totalW) / 2;
-    tft.setCursor(startX, ROW_SENSOR_SUHU + 12);
-    tft.print(buf);
-    tft.setTextSize(1); tft.setTextColor(0xFE60);  // light orange unit
-    tft.setCursor(startX + valW, ROW_SENSOR_SUHU + 18);
-    tft.print("\xF7""C");
-    changed = true;
+      tft.fillRect(2, ROW_SENSOR_SUHU + 10, 124, 24, C_BG);
+      tft.setTextSize(3); tft.setTextColor(0xFD20);
+      int valW = strlen(buf) * 18;
+      int unitW = 8;
+      int totalW = valW + unitW;
+      int startX = (TFT_W - totalW) / 2;
+      tft.setCursor(startX, ROW_SENSOR_SUHU + 12);
+      tft.print(buf);
+      tft.setTextSize(1); tft.setTextColor(0xFE60);
+      tft.setCursor(startX + valW, ROW_SENSOR_SUHU + 18);
+      tft.print("\xF7""C");
+      changed = true;
     }
   }
 
-  // ── Kelembapan (bottom section) — cool blue tones ──
+  // ── Kelembapan ──
   {
     bool invalid = isnan(current_hum);
     float cmp = invalid ? -9999.0f : (float)current_hum;
@@ -351,23 +341,22 @@ void updateSensorZone() {
       char buf[12];
       if (invalid) snprintf(buf, sizeof(buf), "--.-");
       else         snprintf(buf, sizeof(buf), "%.1f", current_hum);
-    tft.fillRect(2, ROW_SENSOR_KELEMB + 10, 124, 24, C_BG);
-    tft.setTextSize(3); tft.setTextColor(0x041F);  // bright blue value
-    int valW = strlen(buf) * 18;
-    int unitW = 6;   // "%" at size 1 ≈ 6px
-    int totalW = valW + unitW;
-    int startX = (TFT_W - totalW) / 2;
-    tft.setCursor(startX, ROW_SENSOR_KELEMB + 12);
-    tft.print(buf);
-    tft.setTextSize(1); tft.setTextColor(0x87FF);  // light blue unit
-    tft.setCursor(startX + valW, ROW_SENSOR_KELEMB + 18);
-    tft.print("%");
-    changed = true;
+      tft.fillRect(2, ROW_SENSOR_KELEMB + 10, 124, 24, C_BG);
+      tft.setTextSize(3); tft.setTextColor(0x041F);
+      int valW = strlen(buf) * 18;
+      int unitW = 6;
+      int totalW = valW + unitW;
+      int startX = (TFT_W - totalW) / 2;
+      tft.setCursor(startX, ROW_SENSOR_KELEMB + 12);
+      tft.print(buf);
+      tft.setTextSize(1); tft.setTextColor(0x87FF);
+      tft.setCursor(startX + valW, ROW_SENSOR_KELEMB + 18);
+      tft.print("%");
+      changed = true;
     }
   }
 
   if (changed) {
-    // Redraw dividers that may have been overwritten
     tft.fillRect(0, 12, TFT_W, 2, C_DIV_TOPBAR);
     tft.fillRect(0, ROW_SENSOR_KELEMB - 2, TFT_W, 2, C_DIV_HORIZ);
     tft.fillRect(0, ROW_MENU - 2, TFT_W, 2, C_DIV_MENU);
@@ -375,9 +364,8 @@ void updateSensorZone() {
   }
 }
 
-// ── Menu Zone ─────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
-//  Anti-Flicker Helpers — row-level drawing, no full-zone fillRect
+//  Anti-Flicker Helpers — row-level drawing
 // ═══════════════════════════════════════════════════════════════════
 static const char* const NAV_LABELS[] = {"SET SUHU", "SET LEMBAB", "FAN SPEED", "SERVO"};
 static const char* const SERVO_OPTS[] = {"JADWAL", "SWING", "KEMBALI"};
@@ -452,7 +440,6 @@ void drawEditValueOnly(const char* valStr, uint16_t valColor) {
 void drawMenuZone() {
   bool stateChanged = ((int)menuState != cache.menuState);
   if (stateChanged) {
-    // Full clear menu zone on state change
     tft.fillRect(0, ROW_MENU, TFT_W, ROW_HINT - ROW_MENU, C_BG);
     cache.lastNavSel = -1;
     cache.subIdx = -1;
@@ -553,31 +540,53 @@ void updateSensorDisplay() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  ROTARY ENCODER
+//  ROTARY ENCODER — quadrature state-table (Gray code)
+//  Transisi ilegal (akibat bouncing) otomatis bernilai 0,
+//  sehingga tidak butuh debounce berbasis waktu.
 // ═══════════════════════════════════════════════════════════════════
 
 void IRAM_ATTR isr_encoder() {
-  static unsigned long last = 0;
-  unsigned long now = millis();
-  if (now - last > 4) {
-    if (digitalRead(ROTARY_CLK_PIN) == digitalRead(ROTARY_DT_PIN)) encoderValue++;
-    else                                                             encoderValue--;
-    last = now;
-  }
-}
-
-void IRAM_ATTR isr_button() {
-  static unsigned long last = 0;
-  unsigned long now = millis();
-  if (now - last > 200) { buttonPressed = true; last = now; }
+  static const int8_t T[16] = { 0,-1, 1, 0,
+                                1, 0, 0,-1,
+                               -1, 0, 0, 1,
+                                0, 1,-1, 0 };
+  portENTER_CRITICAL_ISR(&encMux);
+  encState = ((encState << 2) |
+              (digitalRead(ROTARY_CLK_PIN) << 1) |
+               digitalRead(ROTARY_DT_PIN)) & 0x0F;
+  encAccum += T[encState];
+  portEXIT_CRITICAL_ISR(&encMux);
 }
 
 void setupEncoder() {
   pinMode(ROTARY_CLK_PIN, INPUT_PULLUP);
   pinMode(ROTARY_DT_PIN,  INPUT_PULLUP);
   pinMode(ROTARY_SW_PIN,  INPUT_PULLUP);
+  encState = (digitalRead(ROTARY_CLK_PIN) << 1) | digitalRead(ROTARY_DT_PIN);
   attachInterrupt(digitalPinToInterrupt(ROTARY_CLK_PIN), isr_encoder, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ROTARY_SW_PIN),  isr_button,  FALLING);
+  attachInterrupt(digitalPinToInterrupt(ROTARY_DT_PIN),  isr_encoder, CHANGE);
+}
+
+// Jumlah "klik" (detent) sejak panggilan terakhir, bertanda +/-
+int readEncoderSteps() {
+  portENTER_CRITICAL(&encMux);
+  int steps = encAccum / ENC_STEPS_PER_DETENT;
+  encAccum -= steps * ENC_STEPS_PER_DETENT;   // sisa transisi dipertahankan
+  portEXIT_CRITICAL(&encMux);
+  return ENC_REVERSE ? -steps : steps;
+}
+
+// Tombol: polling + debounce, tanpa lockout panjang
+bool readButton() {
+  static bool lastRaw = HIGH, stable = HIGH;
+  static unsigned long tChange = 0;
+  bool raw = digitalRead(ROTARY_SW_PIN);
+  if (raw != lastRaw) { lastRaw = raw; tChange = millis(); }
+  if (millis() - tChange >= BTN_DEBOUNCE_MS && raw != stable) {
+    stable = raw;
+    if (stable == LOW) return true;
+  }
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -595,8 +604,7 @@ void saveAll() {
 
 void handleMenu() {
   // ── Button ──────────────────────────────────────────────────
-  if (buttonPressed) {
-    buttonPressed = false;
+  if (readButton()) {
     displayDirty = true;
     if (menuState == STATE_NAVIGATE) {
       if (currentMenuIndex == 3) {
@@ -630,31 +638,31 @@ void handleMenu() {
     }
   }
 
-  // ── Encoder rotation (threshold 2 pulses to debounce) ───────
-  int delta = encoderValue - lastEncoderValue;
-  if (abs(delta) >= 2) {
-    int dir = (delta > 0) ? 1 : -1;
-    lastEncoderValue = encoderValue;
+  // ── Encoder rotation: semua step diproses, tanpa threshold ──
+  int steps = readEncoderSteps();
+  if (steps != 0) {
     displayDirty = true;
 
     if (menuState == STATE_NAVIGATE) {
-      currentMenuIndex = (currentMenuIndex + dir + maxMenuItems) % maxMenuItems;
+      currentMenuIndex = ((currentMenuIndex + steps) % maxMenuItems + maxMenuItems) % maxMenuItems;
 
     } else if (menuState == STATE_SERVO_SUBMENU) {
-      currentSubmenuIndex = (currentSubmenuIndex + dir + 3) % 3;
+      currentSubmenuIndex = ((currentSubmenuIndex + steps) % 3 + 3) % 3;
 
     } else if (menuState == STATE_SERVO_EDIT_JADWAL) {
-      servo_interval_hours = constrain(servo_interval_hours + dir, 1, 24);
+      servo_interval_hours = constrain(servo_interval_hours + steps, 1, 24);
 
     } else if (menuState == STATE_EDIT) {
-      if      (currentMenuIndex == 0) target_temp      = constrain(target_temp      + dir * 0.1, 20.0, 50.0);
-      else if (currentMenuIndex == 1) target_hum       = constrain(target_hum       + dir * 1.0, 30.0, 90.0);
-      else if (currentMenuIndex == 2) target_fan_speed = constrain(target_fan_speed + dir * 5,   0,   100);
-      // Invalidate sensor set-value cache so they redraw in navigate too
+      if (currentMenuIndex == 0)
+        target_temp = constrain(round((target_temp + steps * 0.1) * 10.0) / 10.0, 20.0, 50.0);
+      else if (currentMenuIndex == 1)
+        target_hum = constrain(target_hum + steps * 1.0, 30.0, 90.0);
+      else if (currentMenuIndex == 2)
+        target_fan_speed = constrain(target_fan_speed + steps * 5, 0, 100);
       cache.setTemp = -999; cache.setHum = -999;
 
     } else if (menuState == STATE_CONFIRM) {
-      // Any rotation = back to EDIT
+      // Rotasi apa pun = kembali ke EDIT
       if (currentMenuIndex == 3)
         menuState = (servo_mode == SERVO_MODE_SWING) ? STATE_SERVO_SUBMENU : STATE_SERVO_EDIT_JADWAL;
       else
@@ -668,12 +676,9 @@ void handleMenu() {
 // ═══════════════════════════════════════════════════════════════════
 
 void readSensorAndControl() {
-  // Fan selalu jalan sesuai setting walau sensor mati (non-blocking, murah).
   int fan_pwm = map(target_fan_speed, 0, 100, 0, 255);
   ledcWrite(FAN_PWM_PIN, fan_pwm);
 
-  // ── Sensor belum pernah OK → coba begin() ulang, tapi max tiap 5 dtk ──
-  //    Return cepat supaya loop/menu/display tidak ketahan.
   if (!sensorOK) {
     unsigned long now = millis();
     if (now - lastSensorRetry < SENSOR_RETRY_MS) return;
@@ -692,7 +697,6 @@ void readSensorAndControl() {
   if (isnan(t) || isnan(h)) {
     Serial.println("[SHT30] Read fail");
     if (++sensorFails >= 3) {
-      // 3x gagal beruntun → anggap sensor lepas, failsafe + coba begin ulang nanti
       sensorOK = false;
       sensorFails = 0;
       lastSensorRetry = millis();
@@ -705,12 +709,10 @@ void readSensorAndControl() {
   sensorFails = 0;
   current_temp = t;
   current_hum  = h;
-  // PID Heater (hanya saat sensor valid)
   myPID.run();
   int pwm = (int)heater_pwm_value;
   if (current_temp < target_temp && pwm < 15) pwm = 120;
   ledcWrite(HEATER_PWM_PIN, pwm);
-  // Humidifier
   if      (current_hum <= target_hum - 1.0) digitalWrite(RELAY_HUM_PIN, HIGH);
   else if (current_hum >= target_hum)        digitalWrite(RELAY_HUM_PIN, LOW);
 
@@ -723,10 +725,8 @@ void readSensorAndControl() {
 // ═══════════════════════════════════════════════════════════════════
 
 void setupWifi() {
-  // Non-blocking: coba connect singkat saja, jangan tahan boot.
-  // Portal tetap hidup di background via wm.process() di loop().
   wm.setConfigPortalBlocking(false);
-  wm.setConnectTimeout(5);          // max 5 dtk coba connect
+  wm.setConnectTimeout(5);
   wm.setConnectRetries(1);
   wm.setConfigPortalTimeout(180);
   wm.setWiFiAutoReconnect(true);
@@ -772,7 +772,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
 }
 
 void reconnect() {
-  // TLS handshake bisa makan 3-8 dtk → throttle 10 dtk agar UI tidak freeze.
   unsigned long now = millis();
   if (now - lastMqttReconnectAttempt < MQTT_RECONNECT_MS) return;
   lastMqttReconnectAttempt = now;
@@ -802,6 +801,41 @@ void publishSensorData() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  NETWORK TASK (core 0) — WiFi/MQTT/TLS tidak boleh menahan UI
+// ═══════════════════════════════════════════════════════════════════
+
+void networkTask(void* pv) {
+  setupWifi();
+
+  espClient.setInsecure();
+  espClient.setTimeout(3);
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+  client.setSocketTimeout(3);
+  client.setKeepAlive(30);
+
+  unsigned long now = millis();
+  unsigned long lastWifi = now, lastPub = now;
+  lastMqttReconnectAttempt = now - MQTT_RECONNECT_MS + 3000;  // coba MQTT 3 dtk lagi
+
+  for (;;) {
+    wm.process();
+    now = millis();
+
+    if (now - lastWifi >= 5000) { lastWifi = now; handleWifiCheck(); }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      if (!client.connected()) reconnect();
+      else                     client.loop();
+    }
+
+    if (now - lastPub >= 5000) { lastPub = now; publishSensorData(); }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  SETUP & LOOP
 // ═══════════════════════════════════════════════════════════════════
 
@@ -816,9 +850,11 @@ void setup() {
   target_fan_speed = preferences.getInt("t_fan",     100);
   if (target_fan_speed > 100) target_fan_speed = 100;
 
-  // TFT Init
+  // TFT Init (hardware SPI di HSPI: SCLK=14, MOSI=13)
+  tftSPI.begin(TFT_SCLK, -1, TFT_MOSI, -1);
   tft.initR(INITR_BLACKTAB);
-  tft.setRotation(0);      // Portrait
+  tft.setSPISpeed(27000000);      // turunkan ke 20000000 bila layar glitch
+  tft.setRotation(0);             // Portrait
   tft.setTextWrap(false);
   tft.fillScreen(C_BG);
   tft.setTextSize(1); tft.setTextColor(ST77XX_WHITE);
@@ -860,37 +896,22 @@ void setup() {
     sensorOK = true;
   }
 
-  // WiFi (timeout singkat, non-blocking)
-  setupWifi();
+  lastSensorRead = millis() - SENSOR_READ_MS + 500;  // baca pertama 0.5 dtk lagi
 
-  // MQTT (tanpa connect di sini — reconnect ditangani di loop)
-  espClient.setInsecure();
-  espClient.setTimeout(3);
-  client.setServer(mqtt_server, mqtt_port);
-  client.setCallback(callback);
-  client.setSocketTimeout(3);
-  client.setKeepAlive(30);
-
-  // Stagger jadwal agar tidak semua task fire bareng di awal boot
-  unsigned long now = millis();
-  lastSensorRead  = now - SENSOR_READ_MS + 500;  // baca pertama 0.5 dtk lagi
-  lastMqttPublish = now;
-  lastWifiCheck   = now;
-  lastMqttReconnectAttempt = now - MQTT_RECONNECT_MS + 3000; // coba MQTT 3 dtk lagi
+  // ── 4. WiFi + MQTT di task terpisah (core 0), loop() tetap di core 1 ──
+  xTaskCreatePinnedToCore(networkTask, "net", 10240, NULL, 1, NULL, 0);
 
   Serial.println("[BOOT] Done. UI siap, sensor/WiFi/MQTT jalan background.");
 }
 
 void loop() {
-  wm.process();
-
-  // Encoder & menu logic
+  // Encoder & menu logic (prioritas utama, dipanggil tiap iterasi)
   handleMenu();
 
-  // Always update sensor display (real-time)
+  // Sensor display (hanya redraw saat nilai berubah)
   updateSensorDisplay();
 
-  // Display partial update with cooldown to reduce tearing
+  // Display partial update
   unsigned long now = millis();
   if (displayDirty && (now - lastDisplayUpdate >= DISPLAY_COOLDOWN_MS)) {
     updateDisplay();
@@ -898,30 +919,12 @@ void loop() {
     displayDirty = false;
   }
 
-  // Servo movement (non-blocking, every 30ms internally)
+  // Servo movement (non-blocking, tiap 30ms internal)
   updateServo();
-
-  // WiFi check every 5s
-  if (now - lastWifiCheck >= 5000) {
-    lastWifiCheck = now;
-    handleWifiCheck();
-  }
-
-  // MQTT (client.loop sesering mungkin, connect di-throttle 10 dtk)
-  if (WiFi.status() == WL_CONNECTED) {
-    if (!client.connected()) reconnect();
-    else                     client.loop();
-  }
 
   // Sensor & control setiap 2 dtk (return cepat bila sensor mati)
   if (now - lastSensorRead >= SENSOR_READ_MS) {
     lastSensorRead = now;
     readSensorAndControl();
-  }
-
-  // Publish MQTT every 5s (dilewati bila sensor belum valid)
-  if (now - lastMqttPublish >= 5000) {
-    lastMqttPublish = now;
-    publishSensorData();
   }
 }
