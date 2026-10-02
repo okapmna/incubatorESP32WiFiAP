@@ -40,7 +40,7 @@ An automatic egg incubator control system based on the ESP32 with MQTT (IoT) con
 | Rotary DT | GPIO 26 | Encoder |
 | Rotary SW | GPIO 27 | Encoder button |
 
-## Running with PlatformIO
+## Running with PlatformIO (main branch)
 
 The project follows the standard PlatformIO layout.
 
@@ -57,13 +57,12 @@ pio monitor
 
 WiFi is configured with WiFiManager on first boot. MQTT credentials are stored in `include/secret.h`. Copy `include/secret-example.h` and fill in the server, port, username, password, and topics.
 
-## Running with Arduino IDE
+## Running with Arduino IDE (arduino-ide branch)
 
-For the classic Arduino IDE sketch version, use the `arduino-ide` branch.
+The `arduino-ide` branch contains the classic Arduino IDE sketch version.
 
-1. `git checkout arduino-ide`
-2. Open `firmware/incubator_esp32_mqtt/incubator_esp32_mqtt.ino` in the Arduino IDE.
-3. Install the following libraries via the Library Manager:
+1. Open `firmware/incubator_esp32_mqtt/incubator_esp32_mqtt.ino` in the Arduino IDE.
+2. Install the following libraries via the Library Manager:
    - ArduinoJson (bblanchon)
    - PubSubClient (knolleary)
    - WiFiManager (tzapu)
@@ -72,8 +71,8 @@ For the classic Arduino IDE sketch version, use the `arduino-ide` branch.
    - Adafruit GFX Library
    - Adafruit SSD1306
    - AutoPID
-4. Copy `secret-example.h` to `secret.h` and fill in the MQTT credentials.
-5. Select ESP32 Dev Module and upload.
+3. Copy `secret-example.h` to `secret.h` and fill in the MQTT credentials.
+4. Select ESP32 Dev Module and upload.
 
 ## MQTT Topics
 
@@ -95,7 +94,8 @@ Supported commands on the `con` topic:
 
 ## Old Code (WiFi AP)
 
-The old WiFi Access Point version of the incubator (without internet) is archived in `old_code/inkubatorAP.ino` and is no longer developed.
+The old WiFi Access Point version of the incubator (without internet) is archived and no longer developed:
+- `arduino-ide` branch: `firmware/inkubatorAP/inkubatorAP.ino`
 
 ## Schematic and Documentation
 
