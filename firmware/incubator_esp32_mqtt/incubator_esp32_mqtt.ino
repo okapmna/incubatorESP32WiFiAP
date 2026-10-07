@@ -28,6 +28,7 @@
 #include <ArduinoJson.h>
 #include <AutoPID.h>
 #include "secret.h"
+#include "icons.h"   // Bitmap ikon (WiFi) dipisah ke file tersendiri
 
 // --- Pin Aktuator ---
 #define HEATER_PWM_PIN  18  // Pemanas (PWM)
@@ -448,11 +449,17 @@ void updateTopbar() {
   tft.setCursor(2, 3);
   tft.print(dateStr);   // Tanggal-bulan-tahun di pojok kiri (menggantikan teks INCUBATOR)
 
-  const char* wl; uint16_t wc;
-  if      (st == 1) { wl = "WIFI:OK"; wc = C_WIFI_OK; }
-  else if (st == 2) { wl = "WIFI:AP"; wc = C_WIFI_AP; }
-  else              { wl = "WIFI:DC"; wc = C_WIFI_DC; }
-  drawZoneTextRight(TFT_W - 52, 3, 50, 9, wl, wc, 1);
+  // Ikon WiFi di pojok kanan (bitmap dari icons.h)
+  const int ICON_X = TFT_W - ICON_W - 3;
+  const int ICON_Y = 1;
+  if (st == 1) {            // Terhubung: hijau
+    tft.drawBitmap(ICON_X, ICON_Y, ICON_WIFI, ICON_W, ICON_H, C_WIFI_OK);
+  } else if (st == 2) {     // Portal konfigurasi aktif: oranye
+    tft.drawBitmap(ICON_X, ICON_Y, ICON_WIFI, ICON_W, ICON_H, C_WIFI_AP);
+  } else {                  // Terputus: abu-abu + coretan merah
+    tft.drawBitmap(ICON_X, ICON_Y, ICON_WIFI, ICON_W, ICON_H, C_DIMMED);
+    tft.drawBitmap(ICON_X, ICON_Y, ICON_WIFI_SLASH, ICON_W, ICON_H, C_WIFI_DC);
+  }
 }
 
 /** @brief Menggambar pembaruan sensor, me-redraw hanya bila melewati batas deadband */
