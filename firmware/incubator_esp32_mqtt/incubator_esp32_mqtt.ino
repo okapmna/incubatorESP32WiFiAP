@@ -2,16 +2,20 @@
  * @file incubator_firmware.ino
  * @brief Firmware Inkubator ESP32 (Satu File)
  * 
- * Hardware: Layar ST7735S 128x160 portrait (HSPI), Sensor SHT30, Rotary Encoder KY-040
+ * Hardware: Layar ST7735S 128x160 portrait (HSPI), Sensor SHT30, Rotary Encoder KY-040, RTC DS1307
  * Kontrol: Pemanas (PID), Humidifier (Relay), Kipas (PWM), Pembalik Telur (Servo)
  * Jaringan: WiFiManager + MQTT TLS (berjalan di Core 0 agar UI di Core 1 tidak macet)
  * Penyimpanan: Pengaturan tersimpan di NVS (Non-Volatile Storage)
+ * RTC: DS1307 (I2C, bus yang sama dengan SHT30). Diset dari waktu kompilasi saat firmware
+ *      pertama kali di-upload, lalu dikalibrasi ulang via NTP setiap 30 hari.
  */
 
 // ==============================================================================
 // 1. LIBRARY & KONFIGURASI HARDWARE
 // ==============================================================================
 #include <SPI.h>
+#include <Wire.h>
+#include <time.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <WiFiManager.h>
@@ -19,6 +23,7 @@
 #include <Adafruit_SHT31.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
+#include <RTClib.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <AutoPID.h>
@@ -41,6 +46,17 @@
 #define ROTARY_CLK_PIN  25  // Putaran Kanan/Kiri
 #define ROTARY_DT_PIN   26  // Putaran Kanan/Kiri
 #define ROTARY_SW_PIN   27  // Tombol Tekan
+
+// --- Pin I2C (SHT30 + DS1307 berbagi bus: SDA=21, SCL=22 / default ESP32) ---
+// Alamat: SHT30 = 0x44, DS1307 = 0x68 (tidak bentrok)
+
+// --- Konfigurasi RTC DS1307 ---
+#define RTC_CAL_INTERVAL_SEC  (30UL * 24UL * 3600UL) // Kalibrasi ulang tiap 30 hari
+#define RTC_READ_MS           1000                   // Baca RTC tiap 1 detik
+#define RTC_CAL_CHECK_MS      60000                  // Cek jatuh tempo kalibrasi tiap 1 menit
+#define RTC_RETRY_MS          10000                  // Coba ulang bila RTC tidak ditemukan
+#define NTP_RETRY_MS          30000                  // Jeda antar percobaan NTP
+#define GMT_OFFSET_SEC        (8 * 3600)             // WITA (UTC+8). Ganti 7*3600 untuk WIB, 9*3600 untuk WIT
 
 // --- Konfigurasi Encoder ---
 #define ENC_STEPS_PER_DETENT 2     // Pulsa per satu klik fisik
@@ -126,6 +142,24 @@ volatile int8_t  encState = 0;
 volatile int32_t encAccum = 0;
 portMUX_TYPE     encMux   = portMUX_INITIALIZER_UNLOCKED;
 
+// --- Status RTC ---
+// Catatan: bus I2C (Wire) HANYA diakses dari Core 1 (loop). Task jaringan di Core 0
+// hanya mengambil waktu NTP lalu menitipkannya lewat variabel di bawah ini.
+RTC_DS1307    rtc;
+bool          rtcOK              = false;  // RTC terdeteksi & berjalan
+uint16_t      rtcYear            = 0;      // Waktu terakhir yang dibaca dari RTC
+uint8_t       rtcMonth           = 0;
+uint8_t       rtcDay             = 0;
+uint32_t      rtcLastCal         = 0;      // Waktu kalibrasi terakhir (unixtime RTC, 0 = belum pernah via NTP)
+unsigned long lastRtcRead        = 0;
+unsigned long lastRtcCalCheck    = 0;
+unsigned long lastRtcRetry       = 0;
+volatile bool rtcNeedCalibration = false;  // true = menunggu kalibrasi via NTP
+volatile bool ntpResultReady     = false;  // true = hasil NTP siap ditulis ke RTC
+volatile uint16_t ntpYear        = 0;
+volatile uint8_t  ntpMonth = 0, ntpDay = 0, ntpHour = 0, ntpMin = 0, ntpSec = 0;
+static const char BUILD_ID[]     = __DATE__ " " __TIME__; // Penanda tiap kali firmware di-upload ulang
+
 // --- Jadwal Task (Waktu dalam ms) ---
 unsigned long lastSensorRead            = 0;
 unsigned long lastSensorRetry           = 0;
@@ -149,6 +183,7 @@ struct Cache {
   float  setTemp  = -999;
   float  setHum   = -999;
   int    wifiSt   = -1;   // 0: Terputus, 1: Tersambung, 2: Portal Aktif
+  char   dateStr[12] = {}; // Tanggal yang sedang tampil di topbar
   int    menuState  = -1;
   int    subIdx     = -1;
   int    lastNavSel = -1;
@@ -247,6 +282,111 @@ void updateServo() {
 
 
 // ==============================================================================
+// 3B. FUNGSI RTC DS1307 (KALIBRASI AWAL SAAT UPLOAD + KALIBRASI TIAP 30 HARI)
+// ==============================================================================
+
+/** @brief Menyalin tanggal RTC ke buffer "DD-MM-YYYY" (atau "--/--/----" bila RTC tak tersedia) */
+void formatDate(char* buf, size_t len) {
+  if (!rtcOK || rtcYear < 2020) snprintf(buf, len, "--/--/----");
+  else                          snprintf(buf, len, "%02d-%02d-%04d", rtcDay, rtcMonth, rtcYear);
+}
+
+/** @brief True bila RTC belum pernah dikalibrasi via NTP atau sudah lewat 30 hari */
+bool isCalibrationDue(uint32_t nowUnix) {
+  if (rtcLastCal == 0)         return true;
+  if (nowUnix < rtcLastCal)    return true;  // Jam mundur: data tidak masuk akal
+  return (nowUnix - rtcLastCal) >= RTC_CAL_INTERVAL_SEC;
+}
+
+/** @brief Membaca RTC ke variabel global; menandai layar kotor jika tanggal berganti */
+void readRtcNow() {
+  DateTime n = rtc.now();
+  if (n.day() != rtcDay || n.month() != rtcMonth || n.year() != rtcYear) {
+    rtcDay = n.day(); rtcMonth = n.month(); rtcYear = n.year();
+    displayDirty = true;
+  }
+}
+
+/**
+ * @brief Inisialisasi RTC.
+ * - Firmware baru di-upload (BUILD_ID beda) atau RTC mati (baterai habis):
+ *   RTC diset dari waktu kompilasi, lalu minta kalibrasi NTP begitu WiFi tersedia.
+ * - Selain itu: kalibrasi dijadwalkan bila sudah 30 hari sejak kalibrasi terakhir.
+ */
+bool initRtc() {
+  Wire.begin();
+  if (!rtc.begin()) {
+    Serial.println("[RTC] DS1307 NOT FOUND");
+    rtcOK = false;
+    return false;
+  }
+
+  String savedBuild = preferences.getString("fw_build", "");
+  bool newUpload = (savedBuild != String(BUILD_ID));
+  rtcLastCal = preferences.getUInt("rtc_cal", 0);
+
+  if (newUpload || !rtc.isrunning()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));  // Kalibrasi awal: waktu saat kompilasi
+    preferences.putString("fw_build", BUILD_ID);
+    rtcLastCal = 0;                                  // 0 = belum dikalibrasi via NTP
+    preferences.putUInt("rtc_cal", 0);
+    Serial.println(newUpload ? "[RTC] Upload baru: diset dari waktu kompilasi"
+                             : "[RTC] RTC mati: diset dari waktu kompilasi");
+  }
+
+  rtcOK = true;
+  readRtcNow();
+
+  if (isCalibrationDue(rtc.now().unixtime())) {
+    rtcNeedCalibration = true;
+    Serial.println("[RTC] Menunggu kalibrasi NTP");
+  }
+  Serial.printf("[RTC] OK %02d-%02d-%04d\n", rtcDay, rtcMonth, rtcYear);
+  return true;
+}
+
+/** @brief Dipanggil dari loop (Core 1): baca RTC, tulis hasil NTP, dan cek jadwal 30 hari */
+void updateRtc() {
+  unsigned long now = millis();
+
+  // RTC belum ditemukan: coba lagi berkala
+  if (!rtcOK) {
+    if (now - lastRtcRetry >= RTC_RETRY_MS) {
+      lastRtcRetry = now;
+      if (initRtc()) displayDirty = true;
+    }
+    return;
+  }
+
+  // Terapkan hasil NTP dari task jaringan ke RTC
+  if (ntpResultReady) {
+    rtc.adjust(DateTime(ntpYear, ntpMonth, ntpDay, ntpHour, ntpMin, ntpSec));
+    rtcLastCal = rtc.now().unixtime();
+    preferences.putUInt("rtc_cal", rtcLastCal);
+    rtcNeedCalibration = false;
+    ntpResultReady = false;
+    readRtcNow();
+    Serial.printf("[RTC] Dikalibrasi NTP: %02d-%02d-%04d\n", rtcDay, rtcMonth, rtcYear);
+  }
+
+  // Baca waktu berkala
+  if (now - lastRtcRead >= RTC_READ_MS) {
+    lastRtcRead = now;
+    readRtcNow();
+  }
+
+  // Cek apakah sudah waktunya kalibrasi bulanan
+  if (!rtcNeedCalibration && now - lastRtcCalCheck >= RTC_CAL_CHECK_MS) {
+    lastRtcCalCheck = now;
+    if (isCalibrationDue(rtc.now().unixtime())) {
+      rtcNeedCalibration = true;
+      Serial.println("[RTC] 30 hari berlalu, jadwalkan kalibrasi NTP");
+    }
+  }
+}
+
+
+// ==============================================================================
 // 4. FUNGSI TAMPILAN (TFT DISPLAY)
 // ==============================================================================
 
@@ -285,21 +425,28 @@ void drawChrome() {
   tft.print("LEMBABAN");
 }
 
-/** @brief Memperbarui bilah status atas (hanya saat status WiFi berubah) */
+/** @brief Memperbarui bilah status atas (saat status WiFi atau tanggal berubah) */
 void updateTopbar() {
   int st = 0;
   if      (WiFi.status() == WL_CONNECTED)   st = 1;
   else if (wm.getConfigPortalActive())      st = 2;
-  if (st == cache.wifiSt) return;
+
+  char dateStr[12];
+  formatDate(dateStr, sizeof(dateStr));
+
+  bool wifiChanged = (st != cache.wifiSt);
+  bool dateChanged = (strcmp(dateStr, cache.dateStr) != 0);
+  if (!wifiChanged && !dateChanged) return;
   
   cache.wifiSt = st;
+  strcpy(cache.dateStr, dateStr);
   displayDirty = true;
 
   tft.fillRect(0, ROW_TOPBAR, TFT_W, 13, C_TITLE_BG);
   tft.setTextSize(1);
   tft.setTextColor(C_TITLE);
   tft.setCursor(2, 3);
-  tft.print("INKUBATOR");
+  tft.print(dateStr);   // Tanggal-bulan-tahun di pojok kiri (menggantikan teks INCUBATOR)
 
   const char* wl; uint16_t wc;
   if      (st == 1) { wl = "WIFI:OK"; wc = C_WIFI_OK; }
@@ -747,6 +894,27 @@ void handleWifiCheck() {
   }
 }
 
+/**
+ * @brief Mengambil waktu dari NTP (zona waktu GMT_OFFSET_SEC) dan menitipkannya ke
+ * variabel ntp*. Penulisan ke RTC dilakukan di loop (Core 1) agar I2C tidak bentrok.
+ */
+void fetchNtpTime() {
+  configTime(GMT_OFFSET_SEC, 0, "pool.ntp.org", "time.google.com");
+  struct tm ti;
+  if (getLocalTime(&ti, 3000)) {
+    ntpYear  = ti.tm_year + 1900;
+    ntpMonth = ti.tm_mon + 1;
+    ntpDay   = ti.tm_mday;
+    ntpHour  = ti.tm_hour;
+    ntpMin   = ti.tm_min;
+    ntpSec   = ti.tm_sec;
+    ntpResultReady = true;   // Set terakhir setelah semua field terisi
+    Serial.println("[NTP] Waktu diterima");
+  } else {
+    Serial.println("[NTP] Gagal, coba lagi nanti");
+  }
+}
+
 /** @brief Menangani perintah MQTT masuk (JSON/Text) */
 void callback(char* topic, byte* payload, unsigned int length) {
   String msg = "";
@@ -817,6 +985,7 @@ void networkTask(void* pv) {
 
   unsigned long now = millis();
   unsigned long lastWifi = now, lastPub = now;
+  unsigned long lastNtp = now - NTP_RETRY_MS;   // Boleh langsung mencoba saat WiFi siap
   lastMqttReconnectAttempt = now - MQTT_RECONNECT_MS + 3000;
 
   for (;;) {
@@ -827,6 +996,12 @@ void networkTask(void* pv) {
     if (WiFi.status() == WL_CONNECTED) {
       if (!client.connected()) reconnect();
       else                     client.loop();
+
+      // Kalibrasi RTC via NTP (awal upload / tiap 30 hari)
+      if (rtcNeedCalibration && !ntpResultReady && now - lastNtp >= NTP_RETRY_MS) {
+        lastNtp = now;
+        fetchNtpTime();
+      }
     }
     if (now - lastPub >= 5000) { lastPub = now; publishSensorData(); }
 
@@ -861,6 +1036,9 @@ void setup() {
   tft.setCursor(20, 75);
   tft.print("Initializing...");
   Serial.println("[TFT] OK");
+
+  // Inisialisasi RTC (kalibrasi awal dari waktu kompilasi bila firmware baru di-upload)
+  initRtc();
 
   drawChrome();
   setupEncoder();
@@ -901,6 +1079,7 @@ void setup() {
 void loop() {
   handleMenu();
   updateSensorDisplay();
+  updateRtc();
 
   unsigned long now = millis();
   
