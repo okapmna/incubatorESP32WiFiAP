@@ -289,7 +289,7 @@ void updateServo() {
 /** @brief Menyalin tanggal RTC ke buffer "DD-MM-YYYY" (atau "--/--/----" bila RTC tak tersedia) */
 void formatDate(char* buf, size_t len) {
   if (!rtcOK || rtcYear < 2020) snprintf(buf, len, "--/--/----");
-  else                          snprintf(buf, len, "%02d-%02d-%04d", rtcDay, rtcMonth, rtcYear);
+  else                          snprintf(buf, len, "%02d/%02d/%04d", rtcDay, rtcMonth, rtcYear);
 }
 
 /** @brief True bila RTC belum pernah dikalibrasi via NTP atau sudah lewat 30 hari */
@@ -410,6 +410,25 @@ void drawZoneTextRight(int x, int y, int zoneW, int zoneH, const char* txt, uint
   tft.print(txt);
 }
 
+/** @brief Menggambar bitmap monokrom dengan skala integer (mis. 16x16 -> 32x32). */
+void drawBitmapScaled(int16_t x, int16_t y, const uint8_t *bitmap,
+                      int16_t w, int16_t h, uint16_t color, uint8_t scale) {
+  int16_t byteW = (w + 7) / 8;
+  for (int16_t j = 0; j < h; j++) {
+    for (int16_t i = 0; i < w; i++) {
+      if (pgm_read_byte(&bitmap[j * byteW + i / 8]) & (0x80 >> (i & 7))) {
+        if (scale == 1) tft.drawPixel(x + i, y + j, color);
+        else            tft.fillRect(x + i * scale, y + j * scale, scale, scale, color);
+      }
+    }
+  }
+}
+
+// Ikon sensor 24x24 digambar 1:1 agar setinggi angka textSize 3 (24px)
+#define SENSOR_ICON_SCALE 1
+#define SENSOR_ICON_X     4
+#define SENSOR_VAL_X      (SENSOR_ICON_X + SENSOR_ICON_W * SENSOR_ICON_SCALE + 6)
+
 /** @brief Menggambar bingkai UI statis sekali saat booting */
 void drawChrome() {
   tft.fillScreen(C_BG);
@@ -417,13 +436,13 @@ void drawChrome() {
   tft.fillRect(0, ROW_SENSOR_KELEMB - 2, TFT_W, 2, C_DIV_HORIZ);
   tft.fillRect(0, ROW_MENU - 2, TFT_W, 2, C_DIV_MENU);
 
-  tft.setTextSize(1);
-  tft.setTextColor(C_LABEL_SUHU);
-  tft.setCursor(4, ROW_SENSOR_SUHU + 2);
-  tft.print("SUHU");
-  tft.setTextColor(C_LABEL_KELEMB);
-  tft.setCursor(4, ROW_SENSOR_KELEMB + 2);
-  tft.print("LEMBABAN");
+  // Ikon di depan (kiri), seukuran angka: 24x24 sejajar dengan zona nilai
+  drawBitmapScaled(SENSOR_ICON_X, ROW_SENSOR_SUHU + 10,
+                   icon_temperature, SENSOR_ICON_W, SENSOR_ICON_H,
+                   C_LABEL_SUHU, SENSOR_ICON_SCALE);
+  drawBitmapScaled(SENSOR_ICON_X, ROW_SENSOR_KELEMB + 10,
+                   icon_humidity, SENSOR_ICON_W, SENSOR_ICON_H,
+                   C_LABEL_KELEMB, SENSOR_ICON_SCALE);
 }
 
 /** @brief Memperbarui bilah status atas (saat status WiFi atau tanggal berubah) */
@@ -466,7 +485,7 @@ void updateTopbar() {
 void updateSensorZone() {
   bool changed = false;
 
-  // Render Suhu
+  // Render Suhu (ikon 32x32 di kiri, angka rata-kiri tepat di depannya)
   {
     bool invalid = isnan(current_temp);
     float cmp = invalid ? -9999.0f : (float)current_temp;
@@ -476,11 +495,10 @@ void updateSensorZone() {
       if (invalid) snprintf(buf, sizeof(buf), "--.-");
       else         snprintf(buf, sizeof(buf), "%.1f", current_temp);
       
-      tft.fillRect(2, ROW_SENSOR_SUHU + 10, 124, 24, C_BG);
+      tft.fillRect(SENSOR_VAL_X, ROW_SENSOR_SUHU + 10, TFT_W - SENSOR_VAL_X - 2, 24, C_BG);
       tft.setTextSize(3); tft.setTextColor(0xFD20);
       int valW = strlen(buf) * 18;
-      int unitW = 8;
-      int startX = (TFT_W - (valW + unitW)) / 2;
+      int startX = SENSOR_VAL_X;
       
       tft.setCursor(startX, ROW_SENSOR_SUHU + 12);
       tft.print(buf);
@@ -491,7 +509,7 @@ void updateSensorZone() {
     }
   }
 
-  // Render Kelembapan
+  // Render Kelembapan (ikon 32x32 di kiri, angka rata-kiri tepat di depannya)
   {
     bool invalid = isnan(current_hum);
     float cmp = invalid ? -9999.0f : (float)current_hum;
@@ -501,11 +519,10 @@ void updateSensorZone() {
       if (invalid) snprintf(buf, sizeof(buf), "--.-");
       else         snprintf(buf, sizeof(buf), "%.1f", current_hum);
       
-      tft.fillRect(2, ROW_SENSOR_KELEMB + 10, 124, 24, C_BG);
+      tft.fillRect(SENSOR_VAL_X, ROW_SENSOR_KELEMB + 10, TFT_W - SENSOR_VAL_X - 2, 24, C_BG);
       tft.setTextSize(3); tft.setTextColor(0x041F);
       int valW = strlen(buf) * 18;
-      int unitW = 6;
-      int startX = (TFT_W - (valW + unitW)) / 2;
+      int startX = SENSOR_VAL_X;
       
       tft.setCursor(startX, ROW_SENSOR_KELEMB + 12);
       tft.print(buf);
