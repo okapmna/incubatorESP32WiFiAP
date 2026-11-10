@@ -3,11 +3,14 @@
  * @brief Firmware Inkubator ESP32 (Satu File)
  * 
  * Hardware: Layar ST7735S 128x160 portrait (HSPI), Sensor SHT30, Rotary Encoder KY-040, RTC DS1307
- * Kontrol: Pemanas (PID), Humidifier (Relay), Kipas (PWM), Pembalik Telur (Servo)
+ * Kontrol: Pemanas (PID), Humidifier (Relay), Kipas (PWM), Pembalik Telur (Servo), LED Candling
  * Jaringan: WiFiManager + MQTT TLS (berjalan di Core 0 agar UI di Core 1 tidak macet)
  * Penyimpanan: Pengaturan tersimpan di NVS (Non-Volatile Storage)
  * RTC: DS1307 (I2C, bus yang sama dengan SHT30). Diset dari waktu kompilasi saat firmware
  *      pertama kali di-upload, lalu dikalibrasi ulang via NTP setiap 30 hari.
+ * Candling: LED di pin 23, bisa dinyalakan dari menu LCD atau perintah MQTT.
+ *           Ada auto-off agar lampu tidak memanaskan telur bila lupa dimatikan.
+ *           Status LED TIDAK disimpan ke NVS (selalu mati setelah reboot).
  */
 
 // ==============================================================================
@@ -35,6 +38,11 @@
 #define FAN_PWM_PIN     19  // Kipas (PWM)
 #define RELAY_HUM_PIN   12  // Humidifier (Relay)
 #define SERVO_PIN        4  // Servo (PWM 50Hz)
+#define LED_CANDLE_PIN  23  // LED candling telur
+
+// --- Konfigurasi Candling ---
+#define CANDLE_DEFAULT_SEC   120   // Auto-off default (detik)
+#define CANDLE_MAX_SEC       3600  // Batas maksimum durasi (detik)
 
 // --- Pin Layar TFT (HSPI) ---
 #define TFT_SCLK        14
@@ -188,7 +196,7 @@ struct Cache {
   int    menuState  = -1;
   int    subIdx     = -1;
   int    lastNavSel = -1;
-  char   navVals[4][16] = {};
+  char   navVals[5][16] = {};
   char   editStr[16] = {};
 } cache;
 
@@ -211,9 +219,9 @@ enum MenuState {
   STATE_CONFIRM
 };
 MenuState menuState      = STATE_NAVIGATE;
-int currentMenuIndex     = 0;   // 0: Suhu, 1: Lembab, 2: Kipas, 3: Servo
+int currentMenuIndex     = 0;   // 0: Suhu, 1: Lembab, 2: Kipas, 3: Servo, 4: Candling
 int currentSubmenuIndex  = 0;
-const int maxMenuItems   = 4;
+const int maxMenuItems   = 5;
 
 
 // ==============================================================================
@@ -278,6 +286,44 @@ void updateServo() {
       current_servo_pos = constrain(current_servo_pos, 0.0f, 180.0f);
       ledcWrite(SERVO_PIN, angleToDuty(current_servo_pos));
     }
+  }
+}
+
+
+// ==============================================================================
+// 3A. FUNGSI LED CANDLING
+// ==============================================================================
+// Perintah dari task jaringan (Core 0) hanya dititipkan lewat candle_cmd;
+// penulisan pin dan pembaruan layar dilakukan di loop (Core 1).
+
+bool          candle_on      = false;
+unsigned long candle_start   = 0;
+unsigned long candle_dur_ms  = 0;                      // 0 = tanpa auto-off
+volatile int8_t   candle_cmd     = -1;                 // -1 = tidak ada, 0 = OFF, 1 = ON
+volatile uint32_t candle_cmd_sec = CANDLE_DEFAULT_SEC; // Durasi auto-off untuk perintah ON
+
+/** @brief Menyalakan/mematikan LED candling. sec = durasi auto-off (0 = tanpa batas) */
+void setCandle(bool on, uint32_t sec = CANDLE_DEFAULT_SEC) {
+  if (sec > CANDLE_MAX_SEC) sec = CANDLE_MAX_SEC;
+  candle_on     = on;
+  candle_start  = millis();
+  candle_dur_ms = (unsigned long)sec * 1000UL;
+  digitalWrite(LED_CANDLE_PIN, on ? HIGH : LOW);
+  displayDirty  = true;
+  Serial.printf("[CANDLE] %s (auto-off %us)\n", on ? "ON" : "OFF", (unsigned)sec);
+}
+
+/** @brief Dipanggil dari loop: eksekusi perintah MQTT dan cek auto-off */
+void updateCandling() {
+  if (candle_cmd >= 0) {
+    int8_t   c = candle_cmd;
+    uint32_t s = candle_cmd_sec;
+    candle_cmd = -1;
+    setCandle(c == 1, s);
+  }
+  if (candle_on && candle_dur_ms > 0 && millis() - candle_start >= candle_dur_ms) {
+    setCandle(false);
+    Serial.println("[CANDLE] Auto-off");
   }
 }
 
@@ -542,19 +588,21 @@ void updateSensorZone() {
   }
 }
 
-static const char* const NAV_LABELS[] = {"SET SUHU", "SET LEMBAB", "FAN SPEED", "SERVO"};
+static const char* const NAV_LABELS[] = {"SET SUHU", "SET LEMBAB", "FAN SPEED", "SERVO", "CANDLING"};
 static const char* const SERVO_OPTS[] = {"JADWAL", "SWING", "KEMBALI"};
 
 void formatMenuVal(int idx, char* buf, size_t len) {
   if      (idx == 0) snprintf(buf, len, "%.1f\xF7""C", target_temp);
   else if (idx == 1) snprintf(buf, len, "%d%%", (int)target_hum);
   else if (idx == 2) snprintf(buf, len, "%d%%", target_fan_speed);
-  else               snprintf(buf, len, "%s", servo_mode == SERVO_MODE_SWING ? "SWING" : "JADWAL");
+  else if (idx == 3) snprintf(buf, len, "%s", servo_mode == SERVO_MODE_SWING ? "SWING" : "JADWAL");
+  else               snprintf(buf, len, "%s", candle_on ? "ON" : "OFF");
 }
 
 void drawNavRow(int idx, bool sel) {
   int y = ROW_MENU + 2 + idx * 10;
-  tft.fillRect(0, y - 1, TFT_W, 10, sel ? C_SEL_BG : C_BG);
+  // Tinggi 9 px agar baris ke-5 tidak menimpa baris hint di ROW_HINT
+  tft.fillRect(0, y - 1, TFT_W, 9, sel ? C_SEL_BG : C_BG);
   tft.setTextSize(1);
   tft.setCursor(4, y);
   tft.setTextColor(sel ? C_SELECTED : C_NAV_LABEL);
@@ -674,11 +722,12 @@ void drawMenuZone() {
     }
 
   } else if (menuState == STATE_EDIT) {
-    const char* labels[] = {"ATUR SUHU", "ATUR LEMBAB", "FAN SPEED", ""};
+    const char* labels[] = {"ATUR SUHU", "ATUR LEMBAB", "FAN SPEED", "", "LED CANDLING"};
     char vb[16];
     if      (currentMenuIndex == 0) snprintf(vb, 16, "%.1f\xF7""C", target_temp);
     else if (currentMenuIndex == 1) snprintf(vb, 16, "%d%%", (int)target_hum);
-    else                            snprintf(vb, 16, "%d%%", target_fan_speed);
+    else if (currentMenuIndex == 2) snprintf(vb, 16, "%d%%", target_fan_speed);
+    else                            snprintf(vb, 16, "%s", candle_on ? "ON" : "OFF");
     
     if (stateChanged) {
       strcpy(cache.editStr, vb);
@@ -693,6 +742,7 @@ void drawMenuZone() {
     if      (currentMenuIndex == 0) snprintf(vb, 16, "%.1f\xF7""C", target_temp);
     else if (currentMenuIndex == 1) snprintf(vb, 16, "%d%%", (int)target_hum);
     else if (currentMenuIndex == 2) snprintf(vb, 16, "%d%%", target_fan_speed);
+    else if (currentMenuIndex == 4) snprintf(vb, 16, "%s", candle_on ? "ON" : "OFF");
     else snprintf(vb, 16, "%s", servo_mode == SERVO_MODE_SWING ? "SWING" : "JADWAL");
     
     if (stateChanged) {
@@ -771,6 +821,7 @@ void saveAll() {
   preferences.putInt("s_mode",    servo_mode);
   preferences.putInt("s_int",     servo_interval_hours);
   preferences.putBool("s_dir",    servo_direction_cw);
+  // Status LED candling sengaja tidak disimpan (selalu mati setelah reboot)
 }
 
 /** @brief Mengontrol navigasi dan manipulasi variabel berdasarkan input encoder/tombol */
@@ -825,6 +876,8 @@ void handleMenu() {
         target_hum = constrain(target_hum + steps * 1.0, 30.0, 90.0);
       else if (currentMenuIndex == 2)
         target_fan_speed = constrain(target_fan_speed + steps * 5, 0, 100);
+      else if (currentMenuIndex == 4)
+        setCandle(steps > 0);   // Putar kanan = ON, putar kiri = OFF (LED langsung berubah)
       cache.setTemp = -999; cache.setHum = -999;
     } else if (menuState == STATE_CONFIRM) {
       // Pembatalan (Cancel) dari layar confirm
@@ -939,29 +992,60 @@ void fetchNtpTime() {
   }
 }
 
-/** @brief Menangani perintah MQTT masuk (JSON/Text) */
+/**
+ * @brief Menangani perintah MQTT masuk (JSON/Text)
+ *
+ * Perintah teks : "dev_getinfo", "candling_on", "candling_off"
+ * Perintah JSON : {"target_temp":37.5, "target_hum":60, "fan_speed":80}
+ *                 {"candling":true}                        -> ON, auto-off default
+ *                 {"candling":true,"candling_sec":30}      -> ON, auto-off 30 detik
+ *                 {"candling":true,"candling_sec":0}       -> ON, tanpa auto-off
+ *                 {"candling":false}                       -> OFF
+ */
 void callback(char* topic, byte* payload, unsigned int length) {
   String msg = "";
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
   Serial.print("[MQTT] in: "); Serial.println(msg);
 
   if (msg == "dev_getinfo") {
-    StaticJsonDocument<200> resp;
+    StaticJsonDocument<256> resp;
     resp["target_temp"] = target_temp;
     resp["target_hum"]  = target_hum;
     resp["fan_speed"]   = target_fan_speed;
     resp["servo_mode"]  = servo_mode;
-    char buf[200]; serializeJson(resp, buf);
+    resp["candling"]    = candle_on;
+    char buf[256]; serializeJson(resp, buf);
     client.publish(mqtt_topic_data, buf);
     return;
   }
+
+  // Perintah teks sederhana untuk candling
+  if (msg == "candling_on")  { candle_cmd_sec = CANDLE_DEFAULT_SEC; candle_cmd = 1; return; }
+  if (msg == "candling_off") { candle_cmd = 0; return; }
   
   StaticJsonDocument<200> doc;
   if (!deserializeJson(doc, payload, length)) {
-    if (doc.containsKey("target_temp"))  { target_temp      = doc["target_temp"]; cache.setTemp = -999; }
-    if (doc.containsKey("target_hum"))   { target_hum       = doc["target_hum"];  cache.setHum  = -999; }
-    if (doc.containsKey("fan_speed"))    { target_fan_speed = doc["fan_speed"];   }
-    saveAll();
+    // Candling (dieksekusi di loop/Core 1 lewat updateCandling)
+    if (doc.containsKey("candling")) {
+      bool on = false;
+      JsonVariant v = doc["candling"];
+      if      (v.is<bool>())        on = v.as<bool>();
+      else if (v.is<int>())         on = v.as<int>() != 0;
+      else if (v.is<const char*>()) {
+        String s = v.as<const char*>(); s.toLowerCase();
+        on = (s == "on" || s == "true" || s == "1");
+      }
+      candle_cmd_sec = doc.containsKey("candling_sec") ? doc["candling_sec"].as<uint32_t>()
+                                                       : CANDLE_DEFAULT_SEC;
+      candle_cmd = on ? 1 : 0;   // Diset paling akhir setelah durasi terisi
+    }
+
+    // Pengaturan inkubator (hanya simpan ke NVS bila ada yang berubah)
+    bool settingsChanged = false;
+    if (doc.containsKey("target_temp")) { target_temp      = doc["target_temp"]; cache.setTemp = -999; settingsChanged = true; }
+    if (doc.containsKey("target_hum"))  { target_hum       = doc["target_hum"];  cache.setHum  = -999; settingsChanged = true; }
+    if (doc.containsKey("fan_speed"))   { target_fan_speed = doc["fan_speed"];   settingsChanged = true; }
+    if (settingsChanged) saveAll();
   }
 }
 
@@ -985,13 +1069,14 @@ void reconnect() {
 void publishSensorData() {
   if (!sensorOK) return;
   if (WiFi.status() == WL_CONNECTED && client.connected() && !isnan(current_temp)) {
-    StaticJsonDocument<200> doc;
+    StaticJsonDocument<256> doc;
     doc["temperature"]  = current_temp;
     doc["humidity"]     = current_hum;
     doc["fan_speed"]    = target_fan_speed;
     doc["servo_mode"]   = servo_mode;
     doc["servo_pos"]    = current_servo_pos;
-    char buf[200]; serializeJson(doc, buf);
+    doc["candling"]     = candle_on;
+    char buf[256]; serializeJson(doc, buf);
     client.publish(mqtt_topic_data, buf);
   }
 }
@@ -1070,6 +1155,8 @@ void setup() {
   // Failsafe & Konfigurasi Pin Awal
   pinMode(RELAY_HUM_PIN, OUTPUT);
   digitalWrite(RELAY_HUM_PIN, LOW);
+  pinMode(LED_CANDLE_PIN, OUTPUT);       // LED candling: selalu mati saat boot
+  digitalWrite(LED_CANDLE_PIN, LOW);
   ledcAttach(FAN_PWM_PIN,    5000, 8);
   ledcAttach(HEATER_PWM_PIN, 5000, 8);
   ledcWrite(HEATER_PWM_PIN, 0);
@@ -1102,6 +1189,7 @@ void setup() {
 
 void loop() {
   handleMenu();
+  updateCandling();
   updateSensorDisplay();
   updateRtc();
 
