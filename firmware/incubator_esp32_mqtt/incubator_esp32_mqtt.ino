@@ -11,6 +11,13 @@
  * Candling: LED di pin 23, bisa dinyalakan dari menu LCD atau perintah MQTT.
  *           Ada auto-off agar lampu tidak memanaskan telur bila lupa dimatikan.
  *           Status LED TIDAK disimpan ke NVS (selalu mati setelah reboot).
+ * Inkubasi: Pilih jenis telur (egg_profiles.h) -> suhu, kelembapan, dan target hari
+ *           terisi otomatis, tetap bisa diubah manual. Hitungan hari memakai RTC dan
+ *           disimpan di NVS sehingga tetap berjalan setelah mati listrik/reboot.
+ * Lockdown: Beberapa hari terakhir sebelum tetas (kolom lock di egg_profiles.h) pemutaran
+ *           telur dihentikan (servo diam di posisi tengah) dan setpoint suhu PID turun
+ *           sebesar kolom drop. target_temp di menu tidak berubah; kembali normal otomatis
+ *           bila inkubasi dihentikan.
  */
 
 // ==============================================================================
@@ -31,7 +38,8 @@
 #include <ArduinoJson.h>
 #include <AutoPID.h>
 #include "secret.h"
-#include "icons.h"   // Bitmap ikon (WiFi) dipisah ke file tersendiri
+#include "icons.h"          // Bitmap ikon (WiFi) dipisah ke file tersendiri
+#include "egg_profiles.h"   // Data parameter inkubasi per jenis telur
 
 // --- Pin Aktuator ---
 #define HEATER_PWM_PIN  18  // Pemanas (PWM)
@@ -80,6 +88,9 @@
 #define ROW_SENSOR_KELEMB 56
 #define ROW_MENU         98
 #define ROW_HINT        148
+#define NAV_ROW_PITCH    12   // Jarak antar baris menu utama
+#define NAV_VISIBLE       4   // Maksimal baris menu yang tampil; sisanya di-scroll
+#define NAV_BAR_X       (TFT_W - 3)  // Posisi bilah scroll (kolom paling kanan)
 
 // --- Palet Warna (RGB565) ---
 #define C_BG            ST77XX_BLACK
@@ -151,6 +162,28 @@ volatile int8_t  encState = 0;
 volatile int32_t encAccum = 0;
 portMUX_TYPE     encMux   = portMUX_INITIALIZER_UNLOCKED;
 
+// --- Status Inkubasi ---
+// Perintah dari task jaringan (Core 0) dititipkan lewat inc_cmd_*, dieksekusi di loop (Core 1).
+int      inc_profile = EGG_CUSTOM_INDEX;  // Jenis telur yang aktif (indeks EGG_PROFILES)
+int      inc_sel     = 0;                 // Pilihan sementara saat memilih jenis di menu
+int      inc_days    = 21;                // Target masa inkubasi (hari)
+bool     inc_active  = false;             // true = inkubasi sedang berjalan
+uint32_t inc_start   = 0;                 // Waktu mulai (unixtime RTC)
+int      inc_day     = 0;                 // Hari ke-berapa (1-based, 0 = tidak aktif / RTC error)
+volatile int8_t  inc_cmd_profile = -1;    // -1 = tidak ada, selain itu indeks profil
+volatile int16_t inc_cmd_days    = 0;     // 0 = tidak ada
+volatile int8_t  inc_cmd_start   = -1;    // -1 = tidak ada, 0 = stop, 1 = mulai
+
+// Fase lockdown: beberapa hari terakhir sebelum tetas (lihat kolom lock/drop di egg_profiles.h).
+// Selama lockdown: servo berhenti memutar (diam di SERVO_REST_POS) dan setpoint suhu diturunkan.
+// target_temp (nilai di menu/NVS) TIDAK diubah; PID memakai setpoint_temp.
+#define SERVO_REST_POS   90.0f            // Posisi telur datar saat lockdown (tengah rentang servo)
+bool     inc_lockdown  = false;           // true = sedang dalam fase lockdown
+double   setpoint_temp = 37.0;            // Setpoint efektif untuk PID (= target_temp - drop saat lockdown)
+
+enum IncAction { INC_ACT_NONE, INC_ACT_TYPE, INC_ACT_DAYS, INC_ACT_STARTSTOP };
+IncAction incAction = INC_ACT_NONE;       // Aksi yang sedang dikonfirmasi di menu inkubasi
+
 // --- Status RTC ---
 // Catatan: bus I2C (Wire) HANYA diakses dari Core 1 (loop). Task jaringan di Core 0
 // hanya mengambil waktu NTP lalu menitipkannya lewat variabel di bawah ini.
@@ -159,6 +192,7 @@ bool          rtcOK              = false;  // RTC terdeteksi & berjalan
 uint16_t      rtcYear            = 0;      // Waktu terakhir yang dibaca dari RTC
 uint8_t       rtcMonth           = 0;
 uint8_t       rtcDay             = 0;
+uint32_t      rtcUnix            = 0;      // Unixtime terakhir yang dibaca dari RTC
 uint32_t      rtcLastCal         = 0;      // Waktu kalibrasi terakhir (unixtime RTC, 0 = belum pernah via NTP)
 unsigned long lastRtcRead        = 0;
 unsigned long lastRtcCalCheck    = 0;
@@ -193,11 +227,14 @@ struct Cache {
   float  setHum   = -999;
   int    wifiSt   = -1;   // 0: Terputus, 1: Tersambung, 2: Portal Aktif
   char   dateStr[12] = {}; // Tanggal yang sedang tampil di topbar
+  char   incStr[8]   = {}; // Status hari inkubasi yang sedang tampil di topbar
+  int    incLock     = -1; // Status lockdown yang sedang tampil di topbar (warna teks)
   int    menuState  = -1;
   int    subIdx     = -1;
   int    lastNavSel = -1;
-  char   navVals[5][16] = {};
+  char   navVals[6][16] = {};
   char   editStr[16] = {};
+  char   incLbl[4][24] = {}; // Label baris submenu inkubasi
 } cache;
 
 // --- Instansiasi Objek Utama ---
@@ -208,7 +245,7 @@ WiFiClientSecure espClient;
 PubSubClient     client(espClient);
 Preferences      preferences;
 WiFiManager      wm;
-AutoPID          myPID(&current_temp, &target_temp, &heater_pwm_value, 0, 255, KP, KI, KD);
+AutoPID          myPID(&current_temp, &setpoint_temp, &heater_pwm_value, 0, 255, KP, KI, KD);
 
 // --- Mesin Status Menu ---
 enum MenuState {
@@ -216,12 +253,17 @@ enum MenuState {
   STATE_EDIT,
   STATE_SERVO_SUBMENU,
   STATE_SERVO_EDIT_JADWAL,
+  STATE_INC_SUBMENU,
+  STATE_INC_EDIT_TYPE,
+  STATE_INC_EDIT_DAYS,
   STATE_CONFIRM
 };
 MenuState menuState      = STATE_NAVIGATE;
-int currentMenuIndex     = 0;   // 0: Suhu, 1: Lembab, 2: Kipas, 3: Servo, 4: Candling
+int currentMenuIndex     = 0;   // 0: Suhu, 1: Lembab, 2: Kipas, 3: Servo, 4: Candling, 5: Inkubasi
 int currentSubmenuIndex  = 0;
-const int maxMenuItems   = 5;
+const int maxMenuItems   = 6;
+
+void saveAll();   // Deklarasi awal (didefinisikan di bagian encoder & menu)
 
 
 // ==============================================================================
@@ -263,7 +305,20 @@ void setupServo() {
  */
 void updateServo() {
   unsigned long now = millis();
-  
+
+  // Lockdown: hentikan pemutaran, perlahan geser ke posisi datar lalu diam.
+  // Setelah lockdown berakhir (mis. inkubasi dihentikan), logika normal di bawah
+  // otomatis melanjutkan pemutaran dari posisi saat ini.
+  if (inc_lockdown) {
+    if (fabs(current_servo_pos - SERVO_REST_POS) > 0.01f && now - last_servo_update_time >= 30) {
+      last_servo_update_time = now;
+      current_servo_pos += (current_servo_pos < SERVO_REST_POS) ? 1.0f : -1.0f;
+      ledcWrite(SERVO_PIN, angleToDuty(current_servo_pos));
+    }
+    last_servo_mode_change = now;   // Tunda jadwal pembalikan selama lockdown
+    return;
+  }
+
   if (servo_mode == SERVO_MODE_SWING) {
     if (now - last_servo_update_time >= 30) {
       last_servo_update_time = now;
@@ -332,6 +387,16 @@ void updateCandling() {
 // 3B. FUNGSI RTC DS1307 (KALIBRASI AWAL SAAT UPLOAD + KALIBRASI TIAP 30 HARI)
 // ==============================================================================
 
+/**
+ * @brief Menggeser waktu mulai inkubasi saat RTC dikoreksi (set kompilasi / NTP),
+ * supaya hitungan hari tidak melompat ketika jam RTC berubah.
+ */
+void shiftIncubationStart(uint32_t before, uint32_t after) {
+  if (!inc_active) return;
+  inc_start = (uint32_t)((int64_t)inc_start + ((int64_t)after - (int64_t)before));
+  preferences.putUInt("i_start", inc_start);
+}
+
 /** @brief Menyalin tanggal RTC ke buffer "DD-MM-YYYY" (atau "--/--/----" bila RTC tak tersedia) */
 void formatDate(char* buf, size_t len) {
   if (!rtcOK || rtcYear < 2020) snprintf(buf, len, "--/--/----");
@@ -348,6 +413,7 @@ bool isCalibrationDue(uint32_t nowUnix) {
 /** @brief Membaca RTC ke variabel global; menandai layar kotor jika tanggal berganti */
 void readRtcNow() {
   DateTime n = rtc.now();
+  rtcUnix = n.unixtime();
   if (n.day() != rtcDay || n.month() != rtcMonth || n.year() != rtcYear) {
     rtcDay = n.day(); rtcMonth = n.month(); rtcYear = n.year();
     displayDirty = true;
@@ -373,7 +439,10 @@ bool initRtc() {
   rtcLastCal = preferences.getUInt("rtc_cal", 0);
 
   if (newUpload || !rtc.isrunning()) {
+    bool wasRunning = rtc.isrunning();
+    uint32_t before = wasRunning ? rtc.now().unixtime() : 0;
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));  // Kalibrasi awal: waktu saat kompilasi
+    if (wasRunning) shiftIncubationStart(before, rtc.now().unixtime());
     preferences.putString("fw_build", BUILD_ID);
     rtcLastCal = 0;                                  // 0 = belum dikalibrasi via NTP
     preferences.putUInt("rtc_cal", 0);
@@ -407,8 +476,11 @@ void updateRtc() {
 
   // Terapkan hasil NTP dari task jaringan ke RTC
   if (ntpResultReady) {
+    uint32_t before = rtc.now().unixtime();
     rtc.adjust(DateTime(ntpYear, ntpMonth, ntpDay, ntpHour, ntpMin, ntpSec));
-    rtcLastCal = rtc.now().unixtime();
+    uint32_t after = rtc.now().unixtime();
+    shiftIncubationStart(before, after);   // Jaga kontinuitas hitungan hari inkubasi
+    rtcLastCal = after;
     preferences.putUInt("rtc_cal", rtcLastCal);
     rtcNeedCalibration = false;
     ntpResultReady = false;
@@ -430,6 +502,114 @@ void updateRtc() {
       Serial.println("[RTC] 30 hari berlalu, jadwalkan kalibrasi NTP");
     }
   }
+}
+
+
+// ==============================================================================
+// 3C. FUNGSI INKUBASI (JENIS TELUR, TARGET HARI, HITUNG HARI)
+// ==============================================================================
+
+/**
+ * @brief Menerapkan profil telur: mengisi target suhu, kelembapan, dan hari.
+ * Profil "KUSTOM" hanya memilih jenis tanpa menimpa nilai yang sudah diatur.
+ * Nilai tetap bisa diubah manual lewat menu SET SUHU / SET LEMBAB / INKUBASI.
+ */
+void applyProfile(int idx) {
+  if (idx < 0 || idx >= EGG_PROFILE_COUNT) return;
+  inc_profile = idx;
+  const EggProfile& p = EGG_PROFILES[idx];
+  if (!p.custom) {
+    target_temp = p.temp;
+    target_hum  = p.hum;
+    inc_days    = p.days;
+  }
+  saveAll();
+  displayDirty = true;
+  Serial.printf("[INC] Profil: %s (%d hari, %.1f C, %d%%)\n",
+                p.name, inc_days, target_temp, (int)target_hum);
+}
+
+/** @brief Memulai hitungan inkubasi dari sekarang (butuh RTC aktif) */
+void startIncubation() {
+  if (!rtcOK || rtcUnix == 0) {
+    Serial.println("[INC] Gagal mulai: RTC tidak tersedia");
+    return;
+  }
+  inc_active = true;
+  inc_start  = rtcUnix;
+  inc_day    = 1;
+  saveAll();
+  displayDirty = true;
+  Serial.println("[INC] Inkubasi dimulai");
+}
+
+/** @brief Menghentikan hitungan inkubasi */
+void stopIncubation() {
+  inc_active = false;
+  inc_day    = 0;
+  saveAll();
+  displayDirty = true;
+  Serial.println("[INC] Inkubasi dihentikan");
+}
+
+/** @brief Dipanggil dari loop: eksekusi perintah MQTT dan hitung hari ke-berapa */
+void updateIncubation() {
+  if (inc_cmd_profile >= 0) {
+    int p = inc_cmd_profile;
+    inc_cmd_profile = -1;
+    applyProfile(p);
+  }
+  if (inc_cmd_days > 0) {
+    int d = inc_cmd_days;
+    inc_cmd_days = 0;
+    inc_days = constrain(d, EGG_DAYS_MIN, EGG_DAYS_MAX);
+    saveAll();
+    displayDirty = true;
+  }
+  if (inc_cmd_start >= 0) {
+    int8_t c = inc_cmd_start;
+    inc_cmd_start = -1;
+    if (c == 1) { if (!inc_active) startIncubation(); }
+    else        { if (inc_active)  stopIncubation();  }
+  }
+
+  int d = 0;
+  if (inc_active && rtcOK) {
+    d = (rtcUnix >= inc_start) ? (int)((rtcUnix - inc_start) / 86400UL) + 1 : 1;
+  }
+  if (d != inc_day) {
+    inc_day = d;
+    displayDirty = true;
+  }
+
+  // Fase lockdown: hari ke-N dari (inc_days - lock + 1) sampai tetas.
+  // Bila RTC sedang error saat inkubasi berjalan, status lockdown dipertahankan.
+  bool lock = inc_lockdown;
+  if (!inc_active) {
+    lock = false;
+  } else if (rtcOK && inc_day > 0) {
+    const EggProfile& p = EGG_PROFILES[inc_profile];
+    int ld = min((int)p.lock, inc_days - 1);   // Minimal 1 hari tetap normal
+    lock = (ld > 0) && (inc_day > inc_days - ld);
+  }
+  if (lock != inc_lockdown) {
+    inc_lockdown = lock;
+    displayDirty = true;
+    Serial.println(lock ? "[INC] LOCKDOWN: pemutaran dihentikan, suhu diturunkan"
+                        : "[INC] Lockdown selesai");
+  }
+
+  // Setpoint efektif untuk PID
+  double sp = target_temp - (inc_lockdown ? EGG_PROFILES[inc_profile].drop : 0.0);
+  setpoint_temp = constrain(sp, 20.0, 50.0);
+}
+
+/** @brief Teks status untuk topbar: "H5/21", "TETAS!" atau kosong bila tidak aktif */
+void formatIncStatus(char* buf, size_t len) {
+  if (!inc_active)                snprintf(buf, len, "");
+  else if (inc_day <= 0)          snprintf(buf, len, "H--/%d", inc_days);
+  else if (inc_day > inc_days)    snprintf(buf, len, "TETAS!");
+  else                            snprintf(buf, len, "H%d/%d", inc_day, inc_days);
 }
 
 
@@ -491,7 +671,7 @@ void drawChrome() {
                    C_LABEL_KELEMB, SENSOR_ICON_SCALE);
 }
 
-/** @brief Memperbarui bilah status atas (saat status WiFi atau tanggal berubah) */
+/** @brief Memperbarui bilah status atas (saat status WiFi, tanggal, atau hari inkubasi berubah) */
 void updateTopbar() {
   int st = 0;
   if      (WiFi.status() == WL_CONNECTED)   st = 1;
@@ -500,12 +680,18 @@ void updateTopbar() {
   char dateStr[12];
   formatDate(dateStr, sizeof(dateStr));
 
+  char incStr[8];
+  formatIncStatus(incStr, sizeof(incStr));
+
   bool wifiChanged = (st != cache.wifiSt);
   bool dateChanged = (strcmp(dateStr, cache.dateStr) != 0);
-  if (!wifiChanged && !dateChanged) return;
-  
+  bool incChanged  = (strcmp(incStr, cache.incStr) != 0) || (cache.incLock != (int)inc_lockdown);
+  if (!wifiChanged && !dateChanged && !incChanged) return;
+
+  cache.incLock = (int)inc_lockdown;
   cache.wifiSt = st;
   strcpy(cache.dateStr, dateStr);
+  strcpy(cache.incStr, incStr);
   displayDirty = true;
 
   tft.fillRect(0, ROW_TOPBAR, TFT_W, 13, C_TITLE_BG);
@@ -513,6 +699,16 @@ void updateTopbar() {
   tft.setTextColor(C_TITLE);
   tft.setCursor(2, 3);
   tft.print(dateStr);   // Tanggal-bulan-tahun di pojok kiri (menggantikan teks INCUBATOR)
+
+  // Hari inkubasi di tengah topbar ("H5/21"); cyan saat lockdown, oranye bila waktunya menetas
+  if (incStr[0]) {
+    uint16_t incColor = C_SET;
+    if (inc_day > inc_days)  incColor = C_CONFIRM_VAL;
+    else if (inc_lockdown)   incColor = C_EDIT_VAL;
+    tft.setTextColor(incColor);
+    tft.setCursor(66, 3);
+    tft.print(incStr);
+  }
 
   // Ikon WiFi di pojok kanan (bitmap dari icons.h)
   const int ICON_X = TFT_W - ICON_W - 3;
@@ -588,7 +784,7 @@ void updateSensorZone() {
   }
 }
 
-static const char* const NAV_LABELS[] = {"SET SUHU", "SET LEMBAB", "FAN SPEED", "SERVO", "CANDLING"};
+static const char* const NAV_LABELS[] = {"SET SUHU", "SET LEMBAB", "FAN SPEED", "SERVO", "CANDLING", "INKUBASI"};
 static const char* const SERVO_OPTS[] = {"JADWAL", "SWING", "KEMBALI"};
 
 void formatMenuVal(int idx, char* buf, size_t len) {
@@ -596,13 +792,44 @@ void formatMenuVal(int idx, char* buf, size_t len) {
   else if (idx == 1) snprintf(buf, len, "%d%%", (int)target_hum);
   else if (idx == 2) snprintf(buf, len, "%d%%", target_fan_speed);
   else if (idx == 3) snprintf(buf, len, "%s", servo_mode == SERVO_MODE_SWING ? "SWING" : "JADWAL");
-  else               snprintf(buf, len, "%s", candle_on ? "ON" : "OFF");
+  else if (idx == 4) snprintf(buf, len, "%s", candle_on ? "ON" : "OFF");
+  else {
+    // Inkubasi: tampilkan "H5/21" bila berjalan, selain itu nama jenis telur
+    if (inc_active && inc_day > 0) snprintf(buf, len, "H%d/%d", inc_day, inc_days);
+    else                           snprintf(buf, len, "%s", EGG_PROFILES[inc_profile].name);
+  }
+}
+
+int navScroll = 0;   // Indeks menu pertama yang tampil di jendela scroll
+
+/** @brief Menjaga item terpilih tetap di dalam jendela 4 baris. True bila jendela bergeser. */
+bool updateNavScroll() {
+  int old = navScroll;
+  if (currentMenuIndex < navScroll)                      navScroll = currentMenuIndex;
+  if (currentMenuIndex >= navScroll + NAV_VISIBLE)       navScroll = currentMenuIndex - NAV_VISIBLE + 1;
+  navScroll = constrain(navScroll, 0, maxMenuItems - NAV_VISIBLE);
+  return navScroll != old;
+}
+
+/** @brief Bilah scroll tipis di tepi kanan area menu (hanya bila item lebih dari jendela) */
+void drawNavScrollbar() {
+  const int trackY = ROW_MENU;
+  const int trackH = NAV_VISIBLE * NAV_ROW_PITCH;
+  tft.fillRect(NAV_BAR_X, trackY, 2, trackH, C_BG);
+  if (maxMenuItems <= NAV_VISIBLE) return;
+  tft.fillRect(NAV_BAR_X, trackY, 2, trackH, C_SEL_BG);                   // Jalur
+  int thumbH = max(6, trackH * NAV_VISIBLE / maxMenuItems);
+  int range  = maxMenuItems - NAV_VISIBLE;
+  int thumbY = trackY + (trackH - thumbH) * navScroll / range;
+  tft.fillRect(NAV_BAR_X, thumbY, 2, thumbH, C_SELECTED);                 // Penunjuk
 }
 
 void drawNavRow(int idx, bool sel) {
-  int y = ROW_MENU + 2 + idx * 10;
-  // Tinggi 9 px agar baris ke-5 tidak menimpa baris hint di ROW_HINT
-  tft.fillRect(0, y - 1, TFT_W, 9, sel ? C_SEL_BG : C_BG);
+  int slot = idx - navScroll;
+  if (slot < 0 || slot >= NAV_VISIBLE) return;   // Di luar jendela scroll: tidak digambar
+  int y = ROW_MENU + 2 + slot * NAV_ROW_PITCH;
+  // Lebar dikurangi 4px agar bilah scroll di kanan tidak tertimpa
+  tft.fillRect(0, y - 2, TFT_W - 4, NAV_ROW_PITCH, sel ? C_SEL_BG : C_BG);
   tft.setTextSize(1);
   tft.setCursor(4, y);
   tft.setTextColor(sel ? C_SELECTED : C_NAV_LABEL);
@@ -628,6 +855,25 @@ void drawServoOptRow(int idx, bool sel) {
   tft.print(sel ? "> " : "  ");
   tft.print(SERVO_OPTS[idx]);
   if (!sel) tft.fillRect(50, y, TFT_W - 50, 10, C_BG);
+}
+
+/** @brief Label baris submenu inkubasi (dinamis mengikuti status) */
+void incOptLabel(int idx, char* buf, size_t len) {
+  if      (idx == 0) snprintf(buf, len, "JENIS: %s", EGG_PROFILES[inc_profile].name);
+  else if (idx == 1) snprintf(buf, len, "%s", inc_active ? "STOP INKUBASI"
+                                              : (rtcOK ? "MULAI SEKARANG" : "MULAI (RTC ERR)"));
+  else if (idx == 2) snprintf(buf, len, "TARGET: %d HARI", inc_days);
+  else               snprintf(buf, len, "KEMBALI");
+}
+
+void drawIncOptRow(int idx, bool sel, const char* label) {
+  int y = ROW_MENU + 12 + idx * 9;
+  tft.fillRect(0, y - 1, TFT_W, 9, sel ? C_SEL_BG : C_BG);
+  tft.setTextSize(1);
+  tft.setCursor(8, y);
+  tft.setTextColor(sel ? C_SELECTED : C_NAV_LABEL);
+  tft.print(sel ? "> " : "  ");
+  tft.print(label);
 }
 
 void drawHint(const char* txt) {
@@ -672,12 +918,16 @@ void drawMenuZone() {
 
   if (menuState == STATE_NAVIGATE) {
     int newSel = currentMenuIndex;
-    if (cache.lastNavSel == -1) {
+    bool scrolled = updateNavScroll();
+    if (cache.lastNavSel == -1 || scrolled) {
+      // Gambar ulang seluruh jendela (awal masuk menu atau saat daftar bergeser)
+      tft.fillRect(0, ROW_MENU, TFT_W, ROW_HINT - ROW_MENU, C_BG);
       for (int i = 0; i < maxMenuItems; i++) {
-        drawNavRow(i, i == newSel);
+        if (i >= navScroll && i < navScroll + NAV_VISIBLE) drawNavRow(i, i == newSel);
         formatMenuVal(i, cache.navVals[i], sizeof(cache.navVals[i]));
       }
-      drawHint("Putar=pilih  Tekan=atur");
+      drawNavScrollbar();
+      if (cache.lastNavSel == -1) drawHint("Putar=pilih  Tekan=atur");
     } else {
       if (newSel != cache.lastNavSel) {
         drawNavRow(cache.lastNavSel, false);
@@ -721,6 +971,50 @@ void drawMenuZone() {
       drawEditValueOnly(vb, C_EDIT_VAL);
     }
 
+  } else if (menuState == STATE_INC_SUBMENU) {
+    if (stateChanged || cache.lastNavSel != -3) {
+      tft.fillRect(0, ROW_MENU, TFT_W, 12, C_BG);
+      tft.setTextSize(1); tft.setTextColor(C_UNIT);
+      tft.setCursor(4, ROW_MENU + 2);
+      tft.print("INKUBASI:");
+      cache.lastNavSel = -3;
+      cache.subIdx = -1;
+      memset(cache.incLbl, 0, sizeof(cache.incLbl));
+      drawHint("Putar=pilih  Tekan=pilih");
+    }
+    bool selChanged = (currentSubmenuIndex != cache.subIdx);
+    for (int i = 0; i < 4; i++) {
+      char lb[24];
+      incOptLabel(i, lb, sizeof(lb));
+      bool lblChanged = (strcmp(lb, cache.incLbl[i]) != 0);
+      if (lblChanged || (selChanged && (i == currentSubmenuIndex || i == cache.subIdx))) {
+        strcpy(cache.incLbl[i], lb);
+        drawIncOptRow(i, i == currentSubmenuIndex, lb);
+      }
+    }
+    cache.subIdx = currentSubmenuIndex;
+
+  } else if (menuState == STATE_INC_EDIT_TYPE) {
+    const EggProfile& p = EGG_PROFILES[inc_sel];
+    if (stateChanged || strcmp(p.name, cache.editStr) != 0) {
+      strncpy(cache.editStr, p.name, sizeof(cache.editStr) - 1);
+      cache.editStr[sizeof(cache.editStr) - 1] = '\0';
+      char info[24];
+      if (p.custom) snprintf(info, sizeof(info), "ATUR MANUAL");
+      else          snprintf(info, sizeof(info), "%.1f\xF7""C %d%% %dHR", p.temp, p.hum, p.days);
+      drawEditScreen(info, p.name, C_EDIT_VAL, "Putar=jenis Tekan=ok");
+    }
+
+  } else if (menuState == STATE_INC_EDIT_DAYS) {
+    char vb[16]; snprintf(vb, sizeof(vb), "%d HARI", inc_days);
+    if (stateChanged) {
+      strcpy(cache.editStr, vb);
+      drawEditScreen("TARGET INKUBASI:", vb, C_EDIT_VAL, "Putar=ubah   Tekan=konfirm");
+    } else if (strcmp(vb, cache.editStr) != 0) {
+      strcpy(cache.editStr, vb);
+      drawEditValueOnly(vb, C_EDIT_VAL);
+    }
+
   } else if (menuState == STATE_EDIT) {
     const char* labels[] = {"ATUR SUHU", "ATUR LEMBAB", "FAN SPEED", "", "LED CANDLING"};
     char vb[16];
@@ -739,15 +1033,28 @@ void drawMenuZone() {
 
   } else if (menuState == STATE_CONFIRM) {
     char vb[16];
+    const char* lbl = "SIMPAN PERUBAHAN?";
     if      (currentMenuIndex == 0) snprintf(vb, 16, "%.1f\xF7""C", target_temp);
     else if (currentMenuIndex == 1) snprintf(vb, 16, "%d%%", (int)target_hum);
     else if (currentMenuIndex == 2) snprintf(vb, 16, "%d%%", target_fan_speed);
     else if (currentMenuIndex == 4) snprintf(vb, 16, "%s", candle_on ? "ON" : "OFF");
+    else if (currentMenuIndex == 5) {
+      if (incAction == INC_ACT_TYPE) {
+        lbl = "TERAPKAN JENIS?";
+        snprintf(vb, 16, "%s", EGG_PROFILES[inc_sel].name);
+      } else if (incAction == INC_ACT_DAYS) {
+        lbl = "SIMPAN TARGET?";
+        snprintf(vb, 16, "%d HARI", inc_days);
+      } else {
+        lbl = inc_active ? "HENTIKAN INKUBASI?" : "MULAI INKUBASI?";
+        snprintf(vb, 16, "YA");
+      }
+    }
     else snprintf(vb, 16, "%s", servo_mode == SERVO_MODE_SWING ? "SWING" : "JADWAL");
     
     if (stateChanged) {
       strcpy(cache.editStr, vb);
-      drawEditScreen("SIMPAN PERUBAHAN?", vb, C_CONFIRM_VAL, "Tekan=simpan  Putar=batal");
+      drawEditScreen(lbl, vb, C_CONFIRM_VAL, "Tekan=simpan  Putar=batal");
     } else if (strcmp(vb, cache.editStr) != 0) {
       strcpy(cache.editStr, vb);
       drawEditValueOnly(vb, C_CONFIRM_VAL);
@@ -821,6 +1128,10 @@ void saveAll() {
   preferences.putInt("s_mode",    servo_mode);
   preferences.putInt("s_int",     servo_interval_hours);
   preferences.putBool("s_dir",    servo_direction_cw);
+  preferences.putInt("i_prof",    inc_profile);
+  preferences.putInt("i_days",    inc_days);
+  preferences.putBool("i_act",    inc_active);
+  preferences.putUInt("i_start",  inc_start);
   // Status LED candling sengaja tidak disimpan (selalu mati setelah reboot)
 }
 
@@ -831,6 +1142,9 @@ void handleMenu() {
     if (menuState == STATE_NAVIGATE) {
       if (currentMenuIndex == 3) {
         menuState = STATE_SERVO_SUBMENU;
+        currentSubmenuIndex = 0;
+      } else if (currentMenuIndex == 5) {
+        menuState = STATE_INC_SUBMENU;
         currentSubmenuIndex = 0;
       } else {
         menuState = STATE_EDIT;
@@ -850,10 +1164,39 @@ void handleMenu() {
       }
     } else if (menuState == STATE_SERVO_EDIT_JADWAL) {
       menuState = STATE_CONFIRM;
+    } else if (menuState == STATE_INC_SUBMENU) {
+      if (currentSubmenuIndex == 0) {            // Pilih jenis telur
+        inc_sel   = inc_profile;
+        menuState = STATE_INC_EDIT_TYPE;
+      } else if (currentSubmenuIndex == 1) {     // Mulai / hentikan inkubasi
+        if (inc_active || rtcOK) {               // Mulai butuh RTC aktif
+          incAction = INC_ACT_STARTSTOP;
+          menuState = STATE_CONFIRM;
+        }
+      } else if (currentSubmenuIndex == 2) {     // Ubah target hari
+        menuState = STATE_INC_EDIT_DAYS;
+      } else {                                   // Kembali
+        menuState = STATE_NAVIGATE;
+        currentMenuIndex = 5;
+      }
+    } else if (menuState == STATE_INC_EDIT_TYPE) {
+      incAction = INC_ACT_TYPE;
+      menuState = STATE_CONFIRM;
+    } else if (menuState == STATE_INC_EDIT_DAYS) {
+      incAction = INC_ACT_DAYS;
+      menuState = STATE_CONFIRM;
     } else if (menuState == STATE_CONFIRM) {
       if (currentMenuIndex == 3) {
         target_servo_pos = servo_direction_cw ? 180.0f : 0.0f;
         last_servo_mode_change = millis();
+      } else if (currentMenuIndex == 5) {
+        if (incAction == INC_ACT_TYPE) {
+          applyProfile(inc_sel);                 // Isi suhu, lembab, hari otomatis
+        } else if (incAction == INC_ACT_STARTSTOP) {
+          if (inc_active) stopIncubation();
+          else            startIncubation();
+        }
+        // INC_ACT_DAYS: inc_days sudah berubah saat diputar, cukup disimpan di bawah
       }
       saveAll();
       menuState = STATE_NAVIGATE;
@@ -869,6 +1212,12 @@ void handleMenu() {
       currentSubmenuIndex = ((currentSubmenuIndex + steps) % 3 + 3) % 3;
     } else if (menuState == STATE_SERVO_EDIT_JADWAL) {
       servo_interval_hours = constrain(servo_interval_hours + steps, 1, 24);
+    } else if (menuState == STATE_INC_SUBMENU) {
+      currentSubmenuIndex = ((currentSubmenuIndex + steps) % 4 + 4) % 4;
+    } else if (menuState == STATE_INC_EDIT_TYPE) {
+      inc_sel = ((inc_sel + steps) % EGG_PROFILE_COUNT + EGG_PROFILE_COUNT) % EGG_PROFILE_COUNT;
+    } else if (menuState == STATE_INC_EDIT_DAYS) {
+      inc_days = constrain(inc_days + steps, EGG_DAYS_MIN, EGG_DAYS_MAX);
     } else if (menuState == STATE_EDIT) {
       if (currentMenuIndex == 0)
         target_temp = constrain(round((target_temp + steps * 0.1) * 10.0) / 10.0, 20.0, 50.0);
@@ -881,10 +1230,15 @@ void handleMenu() {
       cache.setTemp = -999; cache.setHum = -999;
     } else if (menuState == STATE_CONFIRM) {
       // Pembatalan (Cancel) dari layar confirm
-      if (currentMenuIndex == 3)
+      if (currentMenuIndex == 3) {
         menuState = (servo_mode == SERVO_MODE_SWING) ? STATE_SERVO_SUBMENU : STATE_SERVO_EDIT_JADWAL;
-      else
+      } else if (currentMenuIndex == 5) {
+        if      (incAction == INC_ACT_TYPE) menuState = STATE_INC_EDIT_TYPE;
+        else if (incAction == INC_ACT_DAYS) menuState = STATE_INC_EDIT_DAYS;
+        else                                menuState = STATE_INC_SUBMENU;
+      } else {
         menuState = STATE_EDIT;
+      }
     }
   }
 }
@@ -938,7 +1292,7 @@ void readSensorAndControl() {
   int pwm = (int)heater_pwm_value;
   
   // Kickstart minimal untuk pemanas jika di bawah suhu target
-  if (current_temp < target_temp && pwm < 15) pwm = 120;
+  if (current_temp < setpoint_temp && pwm < 15) pwm = 120;
   
   ledcWrite(HEATER_PWM_PIN, pwm);
   if      (current_hum <= target_hum - 1.0) digitalWrite(RELAY_HUM_PIN, HIGH);
@@ -995,12 +1349,15 @@ void fetchNtpTime() {
 /**
  * @brief Menangani perintah MQTT masuk (JSON/Text)
  *
- * Perintah teks : "dev_getinfo", "candling_on", "candling_off"
+ * Perintah teks : "dev_getinfo", "candling_on", "candling_off", "inc_start", "inc_stop"
  * Perintah JSON : {"target_temp":37.5, "target_hum":60, "fan_speed":80}
  *                 {"candling":true}                        -> ON, auto-off default
  *                 {"candling":true,"candling_sec":30}      -> ON, auto-off 30 detik
  *                 {"candling":true,"candling_sec":0}       -> ON, tanpa auto-off
  *                 {"candling":false}                       -> OFF
+ *                 {"egg":"ayam"}                           -> pilih jenis telur (isi suhu/lembab/hari)
+ *                 {"inc_days":25}                          -> ubah target hari inkubasi
+ *                 {"inc_start":true} / {"inc_start":false} -> mulai / hentikan inkubasi
  */
 void callback(char* topic, byte* payload, unsigned int length) {
   String msg = "";
@@ -1008,22 +1365,30 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print("[MQTT] in: "); Serial.println(msg);
 
   if (msg == "dev_getinfo") {
-    StaticJsonDocument<256> resp;
+    StaticJsonDocument<448> resp;
     resp["target_temp"] = target_temp;
     resp["target_hum"]  = target_hum;
     resp["fan_speed"]   = target_fan_speed;
     resp["servo_mode"]  = servo_mode;
     resp["candling"]    = candle_on;
-    char buf[256]; serializeJson(resp, buf);
+    resp["egg"]         = EGG_PROFILES[inc_profile].name;
+    resp["inc_active"]  = inc_active;
+    resp["inc_day"]     = inc_day;
+    resp["inc_days"]    = inc_days;
+    resp["lockdown"]    = inc_lockdown;
+    resp["setpoint"]    = setpoint_temp;
+    char buf[448]; serializeJson(resp, buf);
     client.publish(mqtt_topic_data, buf);
     return;
   }
 
-  // Perintah teks sederhana untuk candling
+  // Perintah teks sederhana
   if (msg == "candling_on")  { candle_cmd_sec = CANDLE_DEFAULT_SEC; candle_cmd = 1; return; }
   if (msg == "candling_off") { candle_cmd = 0; return; }
+  if (msg == "inc_start")    { inc_cmd_start = 1; return; }
+  if (msg == "inc_stop")     { inc_cmd_start = 0; return; }
   
-  StaticJsonDocument<200> doc;
+  StaticJsonDocument<256> doc;
   if (!deserializeJson(doc, payload, length)) {
     // Candling (dieksekusi di loop/Core 1 lewat updateCandling)
     if (doc.containsKey("candling")) {
@@ -1040,11 +1405,43 @@ void callback(char* topic, byte* payload, unsigned int length) {
       candle_cmd = on ? 1 : 0;   // Diset paling akhir setelah durasi terisi
     }
 
-    // Pengaturan inkubator (hanya simpan ke NVS bila ada yang berubah)
+    // Inkubasi (dieksekusi di loop/Core 1 lewat updateIncubation).
+    // Urutan: jenis telur dulu, lalu override hari/suhu/lembab di bawah bila ada.
+    if (doc.containsKey("egg")) {
+      int idx = egg_find(doc["egg"].as<const char*>());
+      if (idx >= 0) inc_cmd_profile = idx;
+      else Serial.println("[MQTT] Jenis telur tidak dikenal");
+    }
+    if (doc.containsKey("inc_days")) {
+      int d = doc["inc_days"].as<int>();
+      if (d >= EGG_DAYS_MIN && d <= EGG_DAYS_MAX) inc_cmd_days = d;
+    }
+    if (doc.containsKey("inc_start")) {
+      JsonVariant v = doc["inc_start"];
+      bool go = false;
+      if      (v.is<bool>()) go = v.as<bool>();
+      else if (v.is<int>())  go = v.as<int>() != 0;
+      inc_cmd_start = go ? 1 : 0;
+    }
+
+    // Pengaturan inkubator (hanya simpan ke NVS bila ada yang berubah).
+    // Dibatasi sama seperti menu agar nilai ekstrem dari jaringan tidak berbahaya.
     bool settingsChanged = false;
-    if (doc.containsKey("target_temp")) { target_temp      = doc["target_temp"]; cache.setTemp = -999; settingsChanged = true; }
-    if (doc.containsKey("target_hum"))  { target_hum       = doc["target_hum"];  cache.setHum  = -999; settingsChanged = true; }
-    if (doc.containsKey("fan_speed"))   { target_fan_speed = doc["fan_speed"];   settingsChanged = true; }
+    if (doc.containsKey("target_temp")) {
+      double v = doc["target_temp"].as<double>();
+      target_temp = constrain(v, 20.0, 50.0);
+      cache.setTemp = -999; settingsChanged = true;
+    }
+    if (doc.containsKey("target_hum")) {
+      double v = doc["target_hum"].as<double>();
+      target_hum = constrain(v, 30.0, 90.0);
+      cache.setHum = -999; settingsChanged = true;
+    }
+    if (doc.containsKey("fan_speed")) {
+      int v = doc["fan_speed"].as<int>();
+      target_fan_speed = constrain(v, 0, 100);
+      settingsChanged = true;
+    }
     if (settingsChanged) saveAll();
   }
 }
@@ -1057,7 +1454,7 @@ void reconnect() {
   if (WiFi.status() != WL_CONNECTED) return;
   
   Serial.print("[MQTT] Connecting...");
-  String cid = "ESP32-Inc-" + String(random(0xffff), HEX);
+  String cid = String(device_id);
   if (client.connect(cid.c_str(), mqtt_user, mqtt_pass)) {
     Serial.println(" OK");
     client.subscribe(mqtt_topic_con);
@@ -1069,14 +1466,20 @@ void reconnect() {
 void publishSensorData() {
   if (!sensorOK) return;
   if (WiFi.status() == WL_CONNECTED && client.connected() && !isnan(current_temp)) {
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<448> doc;
     doc["temperature"]  = current_temp;
     doc["humidity"]     = current_hum;
     doc["fan_speed"]    = target_fan_speed;
     doc["servo_mode"]   = servo_mode;
     doc["servo_pos"]    = current_servo_pos;
     doc["candling"]     = candle_on;
-    char buf[256]; serializeJson(doc, buf);
+    doc["egg"]          = EGG_PROFILES[inc_profile].name;
+    doc["inc_active"]   = inc_active;
+    doc["inc_day"]      = inc_day;
+    doc["inc_days"]     = inc_days;
+    doc["lockdown"]     = inc_lockdown;
+    doc["setpoint"]     = setpoint_temp;
+    char buf[448]; serializeJson(doc, buf);
     client.publish(mqtt_topic_data, buf);
   }
 }
@@ -1140,6 +1543,14 @@ void setup() {
   target_fan_speed = preferences.getInt("t_fan",     100);
   if (target_fan_speed > 100) target_fan_speed = 100;
 
+  // Load status inkubasi (sebelum initRtc agar kalibrasi RTC bisa menggeser waktu mulai)
+  inc_profile = constrain(preferences.getInt("i_prof", EGG_CUSTOM_INDEX), 0, EGG_PROFILE_COUNT - 1);
+  inc_days    = constrain(preferences.getInt("i_days", 21), EGG_DAYS_MIN, EGG_DAYS_MAX);
+  inc_start   = preferences.getUInt("i_start", 0);
+  inc_active  = preferences.getBool("i_act", false) && inc_start != 0;
+  Serial.printf("[INC] Jenis=%s, target=%d hari, aktif=%d\n",
+                EGG_PROFILES[inc_profile].name, inc_days, inc_active);
+
   // Inisialisasi Layar TFT
   tftSPI.begin(TFT_SCLK, -1, TFT_MOSI, -1);
   tft.initR(INITR_BLACKTAB);
@@ -1170,6 +1581,9 @@ void setup() {
 
   myPID.setBangBang(0.5);
 
+  // Hitung hari inkubasi awal supaya langsung tampil di layar pertama
+  updateIncubation();
+
   // Update layar pertama kali tanpa menunggu data sensor
   updateSensorDisplay();
   updateDisplay();
@@ -1196,6 +1610,7 @@ void setup() {
 void loop() {
   handleMenu();
   updateCandling();
+  updateIncubation();
   updateSensorDisplay();
   updateRtc();
 
