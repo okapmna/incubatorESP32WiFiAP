@@ -1127,6 +1127,12 @@ void setup() {
   Serial.begin(115200);
   Serial.println("[BOOT] Starting...");
 
+  // Cek & tampilkan ID perangkat di awal (dari secret.h)
+  initDeviceId();
+  Serial.printf("[ID] Device ID : %s\n", device_id);
+  Serial.printf("[ID] Topic data: %s\n", mqtt_topic_data);
+  Serial.printf("[ID] Topic con : %s\n", mqtt_topic_con);
+
   // Load memori NVS di awal untuk UI Placeholder
   preferences.begin("incubator", false);
   target_temp      = preferences.getDouble("t_temp", 37.0);
