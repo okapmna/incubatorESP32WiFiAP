@@ -156,6 +156,10 @@ float current_servo_pos     = 0.0;
 float target_servo_pos      = 0.0;
 unsigned long last_servo_mode_change = 0;
 unsigned long last_servo_update_time = 0;
+// Perintah servo dari task jaringan (Core 0) dititipkan lewat servo_cmd_*,
+// dieksekusi di loop (Core 1) lewat updateServo.
+volatile int8_t  servo_cmd_mode     = -1;  // -1 = tidak ada, 0 = JADWAL, 1 = SWING
+volatile int16_t servo_cmd_interval = 0;   // 0 = tidak ada
 
 // --- Status Encoder (dari ISR) ---
 volatile int8_t  encState = 0;
@@ -305,6 +309,29 @@ void setupServo() {
  */
 void updateServo() {
   unsigned long now = millis();
+
+  // Eksekusi perintah servo dari MQTT (dashboard): mode JADWAL/SWING
+  if (servo_cmd_mode >= 0) {
+    int m = servo_cmd_mode;
+    servo_cmd_mode = -1;
+    servo_mode = (m == SERVO_MODE_SWING) ? SERVO_MODE_SWING : SERVO_MODE_JADWAL;
+    if (servo_mode == SERVO_MODE_JADWAL) {
+      target_servo_pos = servo_direction_cw ? 180.0f : 0.0f;
+    }
+    last_servo_mode_change = millis();
+    preferences.putInt("s_mode", servo_mode);
+    displayDirty = true;
+    Serial.printf("[SERVO] Mode dari MQTT: %s\n",
+                  servo_mode == SERVO_MODE_SWING ? "SWING" : "JADWAL");
+  }
+  // Eksekusi perintah interval jadwal dari MQTT
+  if (servo_cmd_interval > 0) {
+    servo_interval_hours = constrain(servo_cmd_interval, 1, 24);
+    servo_cmd_interval = 0;
+    preferences.putInt("s_int", servo_interval_hours);
+    displayDirty = true;
+    Serial.printf("[SERVO] Interval dari MQTT: %d jam\n", servo_interval_hours);
+  }
 
   // Lockdown: hentikan pemutaran, perlahan geser ke posisi datar lalu diam.
   // Setelah lockdown berakhir (mis. inkubasi dihentikan), logika normal di bawah
@@ -1370,6 +1397,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     resp["target_hum"]  = target_hum;
     resp["fan_speed"]   = target_fan_speed;
     resp["servo_mode"]  = servo_mode;
+    resp["servo_interval"] = servo_interval_hours;
     resp["candling"]    = candle_on;
     resp["egg"]         = EGG_PROFILES[inc_profile].name;
     resp["inc_active"]  = inc_active;
@@ -1437,10 +1465,21 @@ void callback(char* topic, byte* payload, unsigned int length) {
       target_hum = constrain(v, 30.0, 90.0);
       cache.setHum = -999; settingsChanged = true;
     }
-    if (doc.containsKey("fan_speed")) {
-      int v = doc["fan_speed"].as<int>();
+    if (doc.containsKey("fan_speed") || doc.containsKey("target_fan")) {
+      int v = doc.containsKey("fan_speed") ? doc["fan_speed"].as<int>()
+                                           : doc["target_fan"].as<int>();
       target_fan_speed = constrain(v, 0, 100);
       settingsChanged = true;
+    }
+    // Servo dari dashboard: mode (0=JADWAL, 1=SWING) dan interval jadwal (1-24 jam).
+    // Dieksekusi di loop/Core 1 lewat updateServo lewat servo_cmd_*.
+    if (doc.containsKey("servo_mode")) {
+      int v = doc["servo_mode"].as<int>();
+      servo_cmd_mode = (v == SERVO_MODE_SWING) ? SERVO_MODE_SWING : SERVO_MODE_JADWAL;
+    }
+    if (doc.containsKey("servo_interval")) {
+      int v = doc["servo_interval"].as<int>();
+      if (v >= 1 && v <= 24) servo_cmd_interval = v;
     }
     if (settingsChanged) saveAll();
   }
@@ -1469,8 +1508,11 @@ void publishSensorData() {
     StaticJsonDocument<448> doc;
     doc["temperature"]  = current_temp;
     doc["humidity"]     = current_hum;
+    doc["target_temp"]  = target_temp;
+    doc["target_hum"]   = target_hum;
     doc["fan_speed"]    = target_fan_speed;
     doc["servo_mode"]   = servo_mode;
+    doc["servo_interval"] = servo_interval_hours;
     doc["servo_pos"]    = current_servo_pos;
     doc["candling"]     = candle_on;
     doc["egg"]          = EGG_PROFILES[inc_profile].name;
@@ -1494,6 +1536,7 @@ void networkTask(void* pv) {
   client.setCallback(callback);
   client.setSocketTimeout(3);
   client.setKeepAlive(30);
+  client.setBufferSize(512);   // Payload JSON status/dev_getinfo bisa > 256 byte (default PubSubClient)
 
   unsigned long now = millis();
   unsigned long lastWifi = now, lastPub = now;
