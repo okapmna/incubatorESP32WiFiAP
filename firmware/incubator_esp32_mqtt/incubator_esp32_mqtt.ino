@@ -51,6 +51,7 @@
 // --- Konfigurasi Candling ---
 #define CANDLE_DEFAULT_SEC   120   // Auto-off default (detik)
 #define CANDLE_MAX_SEC       3600  // Batas maksimum durasi (detik)
+#define CANDLE_CAPTURE_SEC   30    // Auto-off saat foto kamera diambil dari dashboard
 
 // --- Pin Layar TFT (HSPI) ---
 #define TFT_SCLK        14
@@ -1376,12 +1377,15 @@ void fetchNtpTime() {
 /**
  * @brief Menangani perintah MQTT masuk (JSON/Text)
  *
- * Perintah teks : "dev_getinfo", "candling_on", "candling_off", "inc_start", "inc_stop"
+ * Perintah teks : "dev_getinfo", "candling_on", "candling_off", "inc_start", "inc_stop",
+ *                 "capture"
  * Perintah JSON : {"target_temp":37.5, "target_hum":60, "fan_speed":80}
  *                 {"candling":true}                        -> ON, auto-off default
  *                 {"candling":true,"candling_sec":30}      -> ON, auto-off 30 detik
  *                 {"candling":true,"candling_sec":0}       -> ON, tanpa auto-off
  *                 {"candling":false}                       -> OFF
+ *                 {"action":"capture"}                     -> ON, auto-off CANDLE_CAPTURE_SEC
+ *                                                             (dashboard minta kamera ambil foto)
  *                 {"egg":"ayam"}                           -> pilih jenis telur (isi suhu/lembab/hari)
  *                 {"inc_days":25}                          -> ubah target hari inkubasi
  *                 {"inc_start":true} / {"inc_start":false} -> mulai / hentikan inkubasi
@@ -1413,11 +1417,30 @@ void callback(char* topic, byte* payload, unsigned int length) {
   // Perintah teks sederhana
   if (msg == "candling_on")  { candle_cmd_sec = CANDLE_DEFAULT_SEC; candle_cmd = 1; return; }
   if (msg == "candling_off") { candle_cmd = 0; return; }
+  if (msg == "capture")      { candle_cmd_sec = CANDLE_CAPTURE_SEC; candle_cmd = 1; return; }
   if (msg == "inc_start")    { inc_cmd_start = 1; return; }
   if (msg == "inc_stop")     { inc_cmd_start = 0; return; }
-  
-  StaticJsonDocument<256> doc;
+
+  // Fallback: deteksi perintah capture dari teks mentah.
+  // Jika payload dashboard terlalu besar sehingga parsing JSON di bawah gagal,
+  // LED candling tetap menyala hanya dengan mencari substring "action ... capture".
+  if (msg.indexOf("\"action\"") >= 0 && msg.indexOf("capture") >= 0) {
+    candle_cmd_sec = CANDLE_CAPTURE_SEC;
+    candle_cmd = 1;
+  }
+
+  StaticJsonDocument<512> doc;
   if (!deserializeJson(doc, payload, length)) {
+    // Capture dari dashboard (tombol "Ambil Foto Sekarang"): nyalakan LED
+    // candling sesaat sebagai lampu sorot telur, mati otomatis sendiri.
+    if (doc.containsKey("action")) {
+      String act = doc["action"].as<const char*>(); act.toLowerCase();
+      if (act == "capture") {
+        candle_cmd_sec = CANDLE_CAPTURE_SEC;
+        candle_cmd = 1;
+      }
+    }
+
     // Candling (dieksekusi di loop/Core 1 lewat updateCandling)
     if (doc.containsKey("candling")) {
       bool on = false;
