@@ -224,6 +224,9 @@ bool          displayDirty              = true;
 bool sensorOK        = false; // Failsafe jika lepas/gagal baca
 uint8_t sensorFails  = 0;
 
+// --- Status Koneksi MQTT (ditampilkan sebagai indikator di topbar LCD) ---
+volatile bool mqttOnline = false;
+
 // --- Cache Layar (Mencegah Flicker / Redraw Berlebih) ---
 struct Cache {
   float  temp     = -999;
@@ -231,6 +234,7 @@ struct Cache {
   float  setTemp  = -999;
   float  setHum   = -999;
   int    wifiSt   = -1;   // 0: Terputus, 1: Tersambung, 2: Portal Aktif
+  int    mqttSt   = -1;   // 0: Terputus, 1: Tersambung (indikator tepi kanan)
   char   dateStr[12] = {}; // Tanggal yang sedang tampil di topbar
   char   incStr[8]   = {}; // Status hari inkubasi yang sedang tampil di topbar
   int    incLock     = -1; // Status lockdown yang sedang tampil di topbar (warna teks)
@@ -711,18 +715,26 @@ void updateTopbar() {
   char incStr[8];
   formatIncStatus(incStr, sizeof(incStr));
 
+  int mst = mqttOnline ? 1 : 0;
+
   bool wifiChanged = (st != cache.wifiSt);
   bool dateChanged = (strcmp(dateStr, cache.dateStr) != 0);
   bool incChanged  = (strcmp(incStr, cache.incStr) != 0) || (cache.incLock != (int)inc_lockdown);
-  if (!wifiChanged && !dateChanged && !incChanged) return;
+  bool mqttChanged = (mst != cache.mqttSt);
+  if (!wifiChanged && !dateChanged && !incChanged && !mqttChanged) return;
 
   cache.incLock = (int)inc_lockdown;
   cache.wifiSt = st;
+  cache.mqttSt = mst;
   strcpy(cache.dateStr, dateStr);
   strcpy(cache.incStr, incStr);
   displayDirty = true;
 
   tft.fillRect(0, ROW_TOPBAR, TFT_W, 13, C_TITLE_BG);
+
+  // Indikator status MQTT: bilah 3px di tepi kanan topbar.
+  // Hijau = tersambung ke broker, merah = tidak tersambung.
+  tft.fillRect(TFT_W - 3, ROW_TOPBAR, 3, 13, mst ? C_WIFI_OK : C_WIFI_DC);
   tft.setTextSize(1);
   tft.setTextColor(C_TITLE);
   tft.setCursor(2, 3);
@@ -1520,33 +1532,49 @@ void reconnect() {
   if (client.connect(cid.c_str(), mqtt_user, mqtt_pass)) {
     Serial.println(" OK");
     client.subscribe(mqtt_topic_con);
+
+    // Kirim status online segera agar dashboard tahu perangkat hidup,
+    // bahkan sebelum data sensor pertama tersedia.
+    StaticJsonDocument<128> hello;
+    hello["status"]    = "online";
+    hello["device_id"] = device_id;
+    hello["sensor_ok"] = sensorOK;
+    char hb[128];
+    serializeJson(hello, hb);
+    client.publish(mqtt_topic_data, hb);
   } else {
     Serial.print(" FAIL rc="); Serial.println(client.state());
   }
 }
 
+// Mengirim data sensor + status ke dashboard.
+// Tetap mengirim "heartbeat" walau sensor gagal, supaya dashboard & LCD bisa
+// membedakan "perangkat mati/MQTT putus" dari "sensor bermasalah".
 void publishSensorData() {
-  if (!sensorOK) return;
-  if (WiFi.status() == WL_CONNECTED && client.connected() && !isnan(current_temp)) {
-    StaticJsonDocument<448> doc;
-    doc["temperature"]  = current_temp;
-    doc["humidity"]     = current_hum;
-    doc["target_temp"]  = target_temp;
-    doc["target_hum"]   = target_hum;
-    doc["fan_speed"]    = target_fan_speed;
-    doc["servo_mode"]   = servo_mode;
-    doc["servo_interval"] = servo_interval_hours;
-    doc["servo_pos"]    = current_servo_pos;
-    doc["candling"]     = candle_on;
-    doc["egg"]          = EGG_PROFILES[inc_profile].name;
-    doc["inc_active"]   = inc_active;
-    doc["inc_day"]      = inc_day;
-    doc["inc_days"]     = inc_days;
-    doc["lockdown"]     = inc_lockdown;
-    doc["setpoint"]     = setpoint_temp;
-    char buf[448]; serializeJson(doc, buf);
-    client.publish(mqtt_topic_data, buf);
+  if (WiFi.status() != WL_CONNECTED || !client.connected()) return;
+
+  StaticJsonDocument<448> doc;
+  bool sensorValid = sensorOK && !isnan(current_temp) && !isnan(current_hum);
+  doc["sensor_ok"] = sensorValid;
+  if (sensorValid) {
+    doc["temperature"] = current_temp;
+    doc["humidity"]    = current_hum;
   }
+  doc["target_temp"]    = target_temp;
+  doc["target_hum"]     = target_hum;
+  doc["fan_speed"]      = target_fan_speed;
+  doc["servo_mode"]     = servo_mode;
+  doc["servo_interval"] = servo_interval_hours;
+  doc["servo_pos"]      = current_servo_pos;
+  doc["candling"]       = candle_on;
+  doc["egg"]            = EGG_PROFILES[inc_profile].name;
+  doc["inc_active"]     = inc_active;
+  doc["inc_day"]        = inc_day;
+  doc["inc_days"]       = inc_days;
+  doc["lockdown"]       = inc_lockdown;
+  doc["setpoint"]       = setpoint_temp;
+  char buf[448]; serializeJson(doc, buf);
+  client.publish(mqtt_topic_data, buf);
 }
 
 /** @brief Task FreeRTOS untuk menghandle network secara terpisah */
@@ -1581,6 +1609,7 @@ void networkTask(void* pv) {
         fetchNtpTime();
       }
     }
+    mqttOnline = (WiFi.status() == WL_CONNECTED) && client.connected();
     if (now - lastPub >= 5000) { lastPub = now; publishSensorData(); }
 
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -1679,6 +1708,11 @@ void loop() {
   updateIncubation();
   updateSensorDisplay();
   updateRtc();
+
+  // Redraw topbar saat status MQTT berubah (indikator tepi kanan)
+  static int lastMqttUi = -1;
+  int mqttUi = mqttOnline ? 1 : 0;
+  if (mqttUi != lastMqttUi) { lastMqttUi = mqttUi; displayDirty = true; }
 
   unsigned long now = millis();
   
